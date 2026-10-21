@@ -7,7 +7,10 @@ import {
   NumismaticExemplar,
   NumismaticRecord,
 } from "@/types/numismatics";
-import { numismaticRepository } from "@/lib/storage";
+import {
+  autoOptimizeDatabaseImages,
+  numismaticRepository,
+} from "@/lib/storage";
 import { ProcessedImage } from "@/lib/image-utils";
 import {
   CoinCapture,
@@ -60,8 +63,20 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
+  const loadRecords = async () => {
+    const list = await numismaticRepository.list();
+    setRecords(list);
+    setSelectedRecord((prev) =>
+      prev ? list.find((item) => item.id === prev.id) ?? prev : null
+    );
+  };
+
   useEffect(() => {
-    numismaticRepository.list().then(setRecords);
+    loadRecords();
+    autoOptimizeDatabaseImages().then(() => {
+      console.log("Otimização automática do banco local concluída");
+      loadRecords();
+    });
   }, []);
 
   const totalExemplares = records.reduce(
@@ -316,6 +331,7 @@ export default function HomePage() {
               setActiveTab("ficha");
             }}
             onExportJson={handleExportJson}
+            onRecordsOptimized={loadRecords}
           />
         )}
 

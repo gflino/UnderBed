@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Search,
   Coins,
@@ -12,11 +12,13 @@ import {
   Layers,
 } from "lucide-react";
 import { NumismaticRecord } from "@/types/numismatics";
+import { autoOptimizeDatabaseImages } from "@/lib/storage";
 
 interface CollectionListProps {
   records: NumismaticRecord[];
   onSelectRecord: (record: NumismaticRecord) => void;
   onExportJson: () => Promise<void>;
+  onRecordsOptimized?: () => void;
 }
 
 const formatBRL = (value: number) =>
@@ -29,8 +31,20 @@ export function CollectionList({
   records,
   onSelectRecord,
   onExportJson,
+  onRecordsOptimized,
 }: CollectionListProps) {
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    autoOptimizeDatabaseImages().then((modified) => {
+      console.log("Otimização automática do banco local concluída");
+      if (onRecordsOptimized) {
+        onRecordsOptimized();
+      } else if (modified) {
+        // garantido recarregamento via callback do componente pai
+      }
+    });
+  }, []);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

@@ -15,7 +15,11 @@ import {
   X,
   Images,
 } from "lucide-react";
-import { ProcessedImage, processCapturedImage } from "@/lib/image-utils";
+import {
+  ProcessedImage,
+  autoCropAndCompressCoin,
+  createProcessedImageFromWebp,
+} from "@/lib/image-utils";
 import { NumismaticClassification } from "@/types/numismatics";
 
 export interface PendingClassificationPreview {
@@ -45,6 +49,7 @@ export function CoinCapture({
   const [localArmazenamento, setLocalArmazenamento] = useState("");
   const [observacoes, setObservacoes] = useState("");
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const [previewState, setPreviewState] =
@@ -54,23 +59,35 @@ export function CoinCapture({
   const unifiedMultiInputRef = useRef<HTMLInputElement>(null);
   const cameraQuickInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFilesSelected = async (fileList: FileList | null) => {
-    if (!fileList || fileList.length === 0) return;
+  /**
+   * Processa obrigatoriamente qualquer imagem (seja do gerenciador de arquivos do PC,
+   * drag-and-drop ou câmera mobile) passando por `autoCropAndCompressCoin` antes de salvar no estado.
+   */
+  const handleImageCapture = async (files: FileList | File[] | null) => {
+    if (!files || files.length === 0) return;
     setErrorMsg(null);
     setPreviewState(null);
     setIsProcessingFiles(true);
 
     try {
-      const incomingFiles = Array.from(fileList);
+      const incomingFiles = Array.from(files).filter((file) =>
+        file.type.startsWith("image/") || /\.(jpe?g|png|webp|bmp|heic)$/i.test(file.name)
+      );
+      if (incomingFiles.length === 0) {
+        throw new Error("Selecione apenas arquivos de imagem válidos.");
+      }
+
       const remainingSlots = Math.max(0, 2 - selectedImages.length);
       const filesToProcess =
         incomingFiles.length >= 2
           ? incomingFiles.slice(0, 2)
           : incomingFiles.slice(0, Math.max(1, remainingSlots));
 
-      const processedBatch = await Promise.all(
-        filesToProcess.map((file) => processCapturedImage(file))
-      );
+      const processedBatch: ProcessedImage[] = [];
+      for (const file of filesToProcess) {
+        const webpBase64DataUrl = await autoCropAndCompressCoin(file);
+        processedBatch.push(createProcessedImageFromWebp(webpBase64DataUrl));
+      }
 
       setSelectedImages((prev) => {
         if (incomingFiles.length >= 2 || prev.length >= 2) {
@@ -82,12 +99,33 @@ export function CoinCapture({
       setErrorMsg(
         err instanceof Error
           ? err.message
-          : "Erro ao processar as fotografias selecionadas."
+          : "Erro ao recortar e comprimir as fotografias selecionadas."
       );
     } finally {
       setIsProcessingFiles(false);
       if (unifiedMultiInputRef.current) unifiedMultiInputRef.current.value = "";
       if (cameraQuickInputRef.current) cameraQuickInputRef.current.value = "";
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      await handleImageCapture(e.dataTransfer.files);
     }
   };
 
@@ -261,7 +299,16 @@ export function CoinCapture({
   // Etapa 1: Tela Principal Minimalista
   return (
     <form onSubmit={handleAnalyzeSubmit} className="space-y-4">
-      <div className="rounded-3xl border border-slate-800 bg-slate-900/90 p-5 shadow-lg">
+      <div
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`rounded-3xl border p-5 shadow-lg transition ${
+          isDraggingOver
+            ? "border-amber-400 bg-amber-500/10"
+            : "border-slate-800 bg-slate-900/90"
+        }`}
+      >
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-bold uppercase tracking-wider text-amber-400">
             Fotos da Peça ({selectedImages.length}/2)
@@ -319,7 +366,7 @@ export function CoinCapture({
           accept="image/*"
           multiple
           className="hidden"
-          onChange={(e) => handleFilesSelected(e.target.files)}
+          onChange={(e) => handleImageCapture(e.target.files)}
         />
         <input
           ref={cameraQuickInputRef}
@@ -327,10 +374,17 @@ export function CoinCapture({
           accept="image/*"
           capture="environment"
           className="hidden"
-          onChange={(e) => handleFilesSelected(e.target.files)}
+          onChange={(e) => handleImageCapture(e.target.files)}
         />
 
-        {/* Miniaturas Selecionadas */}
+        {/* Dica de UX para recorte automático por contraste */}
+        <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
+          Para uma melhor identificação, fotografe a moeda sobre uma superfície
+          lisa e com cor que contraste com a peça (ex: folha branca ou mesa
+          escura).
+        </p>
+
+        {/* Miniaturas Selecionadas (Recortadas em WebP mantendo proporção do objeto) */}
         {selectedImages.length > 0 ? (
           <div className="mt-4 grid grid-cols-2 gap-3">
             {selectedImages.map((img, idx) => (
@@ -340,7 +394,7 @@ export function CoinCapture({
               >
                 <div className="mb-1 flex items-center justify-between px-1">
                   <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-300">
-                    Foto #{idx + 1}
+                    Foto #{idx + 1} (WebP)
                   </span>
                   <button
                     type="button"
@@ -377,7 +431,7 @@ export function CoinCapture({
           >
             <Images className="mb-2 h-7 w-7 text-amber-400" />
             <p className="text-xs font-medium text-slate-300">
-              Toque para enviar as fotos do Anverso e Reverso
+              Toque ou arraste as fotos do Anverso e Reverso para cá
             </p>
           </div>
         )}

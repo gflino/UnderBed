@@ -3,22 +3,23 @@ import {
   NumismaticExemplar,
   NumismaticRecord,
 } from "@/types/numismatics";
+import { autoCropAndCompressCoin, base64ToBlob } from "@/lib/image-utils";
 
 const STORAGE_KEY = "underbed:collection:v2";
 const LEGACY_STORAGE_KEY = "numisvault:collection:v1";
+const CROP_MIGRATION_KEY = "underbed_crop_migration_v3";
 
-/**
- * Estrutura relacional pronta para migração ao Supabase:
- * - Tabela 1: `public.numismatic_references` (dados base compartilhados: nome, pais, valor_face, ano, casa_moeda, material, peso_gramas, diametro_mm, bordo, alertas_variantes_raras, curiosidades)
- * - Tabela 2: `public.numismatic_exemplars` (exemplares físicos: reference_id, estado_conservacao, valor_mercado_min_brl, valor_mercado_max_brl, alertas_conservacao, variantes_confirmadas, local_armazenamento, observacoes, anverso_image, reverso_image)
- */
 export interface CollectionRepository {
   list(): Promise<NumismaticRecord[]>;
   getById(id: string): Promise<NumismaticRecord | null>;
   create(
     data: NumismaticClassification,
     images?: { anverso?: string; reverso?: string }
-  ): Promise<{ record: NumismaticRecord; exemplarId: string; isNewExemplarOnExistingRef: boolean }>;
+  ): Promise<{
+    record: NumismaticRecord;
+    exemplarId: string;
+    isNewExemplarOnExistingRef: boolean;
+  }>;
   addExemplar(
     recordId: string,
     exemplarData: {
@@ -82,14 +83,16 @@ function normalizeIdentityKey(item: {
 function syncRecordWithPrimaryExemplar(
   record: NumismaticRecord
 ): NumismaticRecord {
- const sanitized = { ...(record as NumismaticRecord & { 
-  justificativa_lados?: unknown;
-  indice_anverso?: unknown;
-  indice_reverso?: unknown;
-}) };
-delete sanitized.justificativa_lados;
-delete sanitized.indice_anverso;
-delete sanitized.indice_reverso;
+  const sanitized = {
+    ...(record as NumismaticRecord & {
+      justificativa_lados?: unknown;
+      indice_anverso?: unknown;
+      indice_reverso?: unknown;
+    }),
+  };
+  delete sanitized.justificativa_lados;
+  delete sanitized.indice_anverso;
+  delete sanitized.indice_reverso;
 
   const primary = sanitized.exemplares[0];
   if (!primary) return sanitized;
@@ -178,6 +181,102 @@ function writeLocalRecords(records: NumismaticRecord[]): void {
       "Limite de armazenamento local atingido. Considere exportar seu backup ou remover itens antigos."
     );
   }
+}
+
+/**
+ * Rotina de otimização automática do banco local com controle de migração `'underbed_crop_migration_v2'`.
+ * Não ignora imagens `data:image/webp` quando `'underbed_crop_migration_v2'` ainda não for `'done'`,
+ * aplicando `autoCropAndCompressCoin` tanto na raiz (`record.anverso_image`, `record.reverso_image`)
+ * quanto em todos os itens de `record.exemplares`.
+ */
+export async function autoOptimizeDatabaseImages(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+
+  const migrationState = window.localStorage.getItem(CROP_MIGRATION_KEY);
+  const forceAllImages = migrationState !== "done";
+
+  const records = readLocalRecords();
+  if (records.length === 0) {
+    window.localStorage.setItem(CROP_MIGRATION_KEY, "done");
+    return false;
+  }
+
+  const shouldProcessImage = (img?: string): img is string => {
+    if (!img || typeof img !== "string" || !img.startsWith("data:image/")) {
+      return false;
+    }
+    if (forceAllImages) {
+      return true;
+    }
+    return (
+      img.startsWith("data:image/jpeg") ||
+      img.startsWith("data:image/jpg") ||
+      img.startsWith("data:image/png")
+    );
+  };
+
+  let anyModified = false;
+
+  for (const record of records) {
+    let recordChanged = false;
+
+    if (shouldProcessImage(record.anverso_image)) {
+      try {
+        const blob = base64ToBlob(record.anverso_image);
+        record.anverso_image = await autoCropAndCompressCoin(blob);
+        recordChanged = true;
+      } catch (err) {
+        console.warn("Falha ao recortar record.anverso_image:", err);
+      }
+    }
+
+    if (shouldProcessImage(record.reverso_image)) {
+      try {
+        const blob = base64ToBlob(record.reverso_image);
+        record.reverso_image = await autoCropAndCompressCoin(blob);
+        recordChanged = true;
+      } catch (err) {
+        console.warn("Falha ao recortar record.reverso_image:", err);
+      }
+    }
+
+    if (Array.isArray(record.exemplares)) {
+      for (const exemplar of record.exemplares) {
+        if (shouldProcessImage(exemplar.anverso_image)) {
+          try {
+            const blob = base64ToBlob(exemplar.anverso_image);
+            exemplar.anverso_image = await autoCropAndCompressCoin(blob);
+            recordChanged = true;
+          } catch (err) {
+            console.warn("Falha ao recortar exemplar.anverso_image:", err);
+          }
+        }
+
+        if (shouldProcessImage(exemplar.reverso_image)) {
+          try {
+            const blob = base64ToBlob(exemplar.reverso_image);
+            exemplar.reverso_image = await autoCropAndCompressCoin(blob);
+            recordChanged = true;
+          } catch (err) {
+            console.warn("Falha ao recortar exemplar.reverso_image:", err);
+          }
+        }
+      }
+    }
+
+    if (recordChanged) {
+      anyModified = true;
+      const synced = syncRecordWithPrimaryExemplar(record);
+      Object.assign(record, synced);
+    }
+  }
+
+  if (anyModified) {
+    writeLocalRecords(records);
+  }
+
+  window.localStorage.setItem(CROP_MIGRATION_KEY, "done");
+  return anyModified;
 }
 
 export const numismaticRepository: CollectionRepository = {
