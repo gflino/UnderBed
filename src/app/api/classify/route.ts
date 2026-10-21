@@ -9,23 +9,10 @@ export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as ClassifyRequestPayload;
 
-    // Normaliza lista unificada de imagens (suporta envio simultâneo em `imagens` ou campos legados)
+    // Normaliza lista unificada de imagens
     const imagesList: ClassifyImageInput[] = Array.isArray(body.imagens)
       ? body.imagens.filter((img) => Boolean(img?.base64))
       : [];
-
-    if (imagesList.length === 0 && body.anversoBase64) {
-      imagesList.push({
-        base64: body.anversoBase64,
-        mimeType: body.anversoMimeType || "image/jpeg",
-      });
-      if (body.reversoBase64) {
-        imagesList.push({
-          base64: body.reversoBase64,
-          mimeType: body.reversoMimeType || "image/jpeg",
-        });
-      }
-    }
 
     if (imagesList.length === 0) {
       return NextResponse.json(

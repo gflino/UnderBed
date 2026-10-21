@@ -35,14 +35,13 @@ interface CoinCaptureProps {
     localArmazenamentoInicial: string;
   }) => Promise<NumismaticClassification>;
   onConfirmSave: (preview: PendingClassificationPreview) => Promise<void>;
-  onLoadDemo: () => void;
+  onLoadDemo?: () => void;
   isLoading: boolean;
 }
 
 export function CoinCapture({
   onAnalyzeImages,
   onConfirmSave,
-  onLoadDemo,
   isLoading,
 }: CoinCaptureProps) {
   const [selectedImages, setSelectedImages] = useState<ProcessedImage[]>([]);
@@ -493,15 +492,6 @@ export function CoinCapture({
               Identificar Lados
             </>
           )}
-        </button>
-
-        <button
-          type="button"
-          onClick={onLoadDemo}
-          disabled={isLoading}
-          className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-2 text-xs font-medium text-slate-400 transition hover:border-amber-500/30 hover:text-amber-300"
-        >
-          Carregar Exemplar de Demonstração (Eisenhower Dollar 1972)
         </button>
       </div>
     </form>

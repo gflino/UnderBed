@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Award,
   Scale,
@@ -23,6 +24,7 @@ import {
   Plus,
   CheckSquare,
   Square,
+  Tag,
 } from "lucide-react";
 import { NumismaticExemplar, NumismaticRecord } from "@/types/numismatics";
 
@@ -42,7 +44,9 @@ interface TechnicalSheetProps {
         | "observacoes"
         | "variantes_confirmadas"
       >
-    >
+    > & {
+      alertas_variantes_raras?: string[];
+    }
   ) => Promise<void>;
   onAddExemplar: (
     recordId: string,
@@ -87,6 +91,7 @@ export function TechnicalSheet({
   onDeleteRecord,
   onBack,
 }: TechnicalSheetProps) {
+  const router = useRouter();
   const exemplares = record.exemplares || [];
   const [selectedExemplarId, setSelectedExemplarId] = useState<string>(
     initialExemplarId || exemplares[0]?.id || ""
@@ -127,6 +132,7 @@ export function TechnicalSheet({
   const [variantesConfirmadas, setVariantesConfirmadas] = useState<string[]>(
     currentExemplar.variantes_confirmadas || []
   );
+  const [customVariantText, setCustomVariantText] = useState("");
   const [savedFeedback, setSavedFeedback] = useState(false);
 
   const [showAddModal, setShowAddModal] = useState(false);
@@ -158,7 +164,6 @@ export function TechnicalSheet({
     setVariantesConfirmadas(currentExemplar.variantes_confirmadas || []);
   }, [currentExemplar.id]);
 
-  // Garante que o valor retornado pela IA (caso tenha texto customizado) também apareça na lista do <select>
   const availableGrades = useMemo(() => {
     const current = estadoConservacao?.trim();
     if (current && !CONSERVACAO_OPTIONS.includes(current)) {
@@ -166,6 +171,15 @@ export function TechnicalSheet({
     }
     return CONSERVACAO_OPTIONS;
   }, [estadoConservacao]);
+
+  // Une variações sugeridas no catálogo com quaisquer variações customizadas já confirmadas neste exemplar
+  const allDisplayedVariants = useMemo(() => {
+    const set = new Set<string>(record.alertas_variantes_raras || []);
+    for (const v of variantesConfirmadas) {
+      if (v?.trim()) set.add(v.trim());
+    }
+    return Array.from(set);
+  }, [record.alertas_variantes_raras, variantesConfirmadas]);
 
   const handleGradeChange = async (newGrade: string) => {
     setEstadoConservacao(newGrade);
@@ -183,6 +197,27 @@ export function TechnicalSheet({
     setVariantesConfirmadas(updatedList);
     await onUpdateExemplar(record.id, currentExemplar.id, {
       variantes_confirmadas: updatedList,
+    });
+  };
+
+  const handleAddCustomVariant = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = customVariantText.trim();
+    if (!trimmed) return;
+
+    const updatedCatalogVariants = Array.from(
+      new Set([...(record.alertas_variantes_raras || []), trimmed])
+    );
+    const updatedConfirmed = Array.from(
+      new Set([...variantesConfirmadas, trimmed])
+    );
+
+    setVariantesConfirmadas(updatedConfirmed);
+    setCustomVariantText("");
+
+    await onUpdateExemplar(record.id, currentExemplar.id, {
+      alertas_variantes_raras: updatedCatalogVariants,
+      variantes_confirmadas: updatedConfirmed,
     });
   };
 
@@ -223,40 +258,59 @@ export function TechnicalSheet({
     exemplares.findIndex((ex) => ex.id === currentExemplar.id)
   );
 
+  const handleBackToCollection = () => {
+    if (onBack) {
+      onBack();
+    } else {
+      router.push("/");
+    }
+  };
+
   return (
     <div className="space-y-5 pb-8">
-      {/* Barra superior de navegação */}
-      {onBack && (
-        <div className="flex items-center justify-between">
+      {/* Barra superior de navegação (sempre visível e gerenciada internamente sem history.back) */}
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={handleBackToCollection}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/90 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Voltar ao Acervo
+        </button>
+
+        {onDeleteRecord && (
           <button
             type="button"
-            onClick={onBack}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/90 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-amber-500/40 hover:text-amber-300"
+            onClick={() => onDeleteRecord(record.id)}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20"
           >
-            <ArrowLeft className="h-4 w-4" />
-            Voltar ao Acervo
+            <Trash2 className="h-3.5 w-3.5" />
+            Excluir Ficha Completa
           </button>
+        )}
+      </div>
 
-          {onDeleteRecord && (
-            <button
-              type="button"
-              onClick={() => onDeleteRecord(record.id)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Excluir Ficha Completa
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Cabeçalho da Ficha Técnica de Referência (Dados Compartilhados) */}
+      {/* Cabeçalho da Ficha Técnica de Referência */}
       <div className="relative overflow-hidden rounded-3xl border border-amber-500/30 bg-gradient-to-br from-slate-900 via-slate-900 to-amber-950/30 p-5 shadow-xl">
+        {/* Badges Superiores na ordem solicitada: Código KM, País, Unidade Monetária, Ano */}
         <div className="flex flex-wrap items-center gap-2">
+          {record.krause_id && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/20 px-3 py-1 text-xs font-bold text-amber-200">
+              <Tag className="h-3.5 w-3.5 text-amber-400" />
+              🏷️ {record.krause_id}
+            </span>
+          )}
           <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-500/15 px-3 py-1 text-xs font-semibold text-amber-300">
             <Globe2 className="h-3.5 w-3.5" />
             {record.pais}
           </span>
+          {record.unidade_monetaria && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/30 bg-emerald-500/15 px-3 py-1 text-xs font-semibold text-emerald-300">
+              <Coins className="h-3.5 w-3.5 text-emerald-400" />
+              {record.unidade_monetaria}
+            </span>
+          )}
           <span className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/90 px-3 py-1 text-xs font-medium text-slate-200">
             <Calendar className="h-3.5 w-3.5 text-amber-400" />
             Ano: {record.ano}
@@ -278,7 +332,41 @@ export function TechnicalSheet({
           <strong className="text-slate-200">{record.casa_moeda}</strong>
         </p>
 
-        {/* Fotografias do Exemplar Selecionado (ou da Referência) */}
+        {/* Seletor rápido de Exemplares no topo quando houver mais de 1 exemplar */}
+        {exemplares.length > 1 && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-indigo-500/30 bg-slate-950/80 p-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {exemplares.map((ex, idx) => {
+                const isSelected = ex.id === currentExemplar.id;
+                return (
+                  <button
+                    key={ex.id}
+                    type="button"
+                    onClick={() => setSelectedExemplarId(ex.id)}
+                    className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                      isSelected
+                        ? "bg-amber-500 text-slate-950 shadow"
+                        : "border border-slate-800 bg-slate-900 text-slate-300 hover:border-amber-500/40"
+                    }`}
+                  >
+                    Exemplar #{idx + 1}
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => onDeleteExemplar(record.id, currentExemplar.id)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/25"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Remover este Exemplar
+            </button>
+          </div>
+        )}
+
+        {/* Fotografias de Anverso/Reverso do Exemplar Físico Selecionado */}
         {(currentExemplar.anverso_image ||
           currentExemplar.reverso_image ||
           record.anverso_image ||
@@ -333,8 +421,8 @@ export function TechnicalSheet({
           </div>
           {variantesConfirmadas.length > 0 && (
             <p className="mt-2 text-[11px] font-medium text-amber-300">
-              ★ Este exemplar possui {variantesConfirmadas.length} variante(s)
-              rara(s) confirmada(s) manualmente pelo colecionador.
+              ★ Este exemplar possui {variantesConfirmadas.length} variação(ões)
+              confirmada(s).
             </p>
           )}
         </div>
@@ -349,19 +437,32 @@ export function TechnicalSheet({
               Exemplares Físicos desta Moeda ({exemplares.length})
             </h2>
             <p className="mt-0.5 text-[11px] text-slate-400">
-              A ficha técnica base é compartilhada. Selecione um exemplar ou
-              cadastre uma moeda repetida com estado e local próprios:
+              Alterne entre os exemplares para comparar fotos, estado de
+              conservação e notas:
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setShowAddModal((prev) => !prev)}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/25"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Adicionar Exemplar Repetido
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {exemplares.length > 1 && (
+              <button
+                type="button"
+                onClick={() => onDeleteExemplar(record.id, currentExemplar.id)}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/25"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Remover este Exemplar
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setShowAddModal((prev) => !prev)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/25"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Adicionar Exemplar Repetido
+            </button>
+          </div>
         </div>
 
         {/* Abas de seleção dos exemplares */}
@@ -414,7 +515,7 @@ export function TechnicalSheet({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className="mb-1 block text-[11px] text-slate-300">
-                  Estado de Conservação do Novo Exemplar
+                  Estado de Conservação
                 </label>
                 <select
                   value={newEstado}
@@ -430,7 +531,7 @@ export function TechnicalSheet({
               </div>
               <div>
                 <label className="mb-1 block text-[11px] text-slate-300">
-                  Local de Armazenamento Individual
+                  Local de Armazenamento
                 </label>
                 <input
                   type="text"
@@ -443,7 +544,7 @@ export function TechnicalSheet({
             </div>
             <div>
               <label className="mb-1 block text-[11px] text-slate-300">
-                Observações Específicas deste Exemplar
+                Observações e Notas Livres
               </label>
               <input
                 type="text"
@@ -472,11 +573,11 @@ export function TechnicalSheet({
         )}
       </div>
 
-      {/* Especificações Metrológicas e Numismáticas (Ficha de Referência Compartilhada) */}
+      {/* Ficha Metrológica de Referência */}
       <div className="rounded-3xl border border-slate-800 bg-slate-900/90 p-5">
         <h2 className="mb-3.5 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-amber-400">
           <Coins className="h-4 w-4" />
-          Ficha Metrológica de Referência (Compartilhada)
+          Ficha Metrológica de Referência
         </h2>
 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -527,75 +628,96 @@ export function TechnicalSheet({
         </div>
       </div>
 
-      {/* Módulo de Variantes Interativo & Alertas de Conservação */}
+      {/* Verificador de Variantes & Alertas de Conservação */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {/* Módulo Interativo de Variantes Raras */}
-        <div className="rounded-3xl border border-amber-500/30 bg-amber-500/5 p-5">
-          <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-amber-300">
-            <AlertTriangle className="h-4 w-4 text-amber-400" />
-            Verificador Interativo de Variantes ({record.ano})
-          </h3>
-          <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-            Sugestões inteligentes da base numismática para este ano/modelo.
-            Inspecione o{" "}
-            <strong className="text-slate-200">
-              Exemplar #{currentExemplarIndex + 1}
-            </strong>{" "}
-            em mãos e toque para confirmar ou desmarcar:
-          </p>
+        {/* Verificador de Variantes */}
+        <div className="rounded-3xl border border-amber-500/30 bg-amber-500/5 p-5 flex flex-col justify-between">
+          <div>
+            <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-amber-300">
+              <AlertTriangle className="h-4 w-4 text-amber-400" />
+              Verificador de Variantes
+            </h3>
+            <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+              Marque as variações identificadas no{" "}
+              <strong className="text-slate-200">
+                Exemplar #{currentExemplarIndex + 1}
+              </strong>{" "}
+              ou adicione uma variação personalizada:
+            </p>
 
-          <div className="mt-3 space-y-2.5">
-            {record.alertas_variantes_raras.length > 0 ? (
-              record.alertas_variantes_raras.map((variante, idx) => {
-                const isConfirmed = variantesConfirmadas.includes(variante);
-                return (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => handleToggleVariant(variante)}
-                    className={`flex w-full items-start gap-2.5 rounded-2xl border p-3 text-left text-xs leading-relaxed transition ${
-                      isConfirmed
-                        ? "border-amber-400 bg-amber-500/20 text-amber-50 shadow-sm"
-                        : "border-amber-500/20 bg-slate-950/70 text-slate-300 hover:border-amber-500/40"
-                    }`}
-                  >
-                    {isConfirmed ? (
-                      <CheckSquare className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
-                    ) : (
-                      <Square className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
-                    )}
-                    <div className="flex-1">
-                      <div className="mb-1 flex items-center gap-1.5">
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-                            isConfirmed
-                              ? "bg-amber-400 text-slate-950"
-                              : "bg-slate-800 text-slate-400"
-                          }`}
-                        >
-                          {isConfirmed
-                            ? "Confirmada neste Exemplar"
-                            : "Sugestão do Catálogo"}
-                        </span>
+            <div className="mt-3 space-y-2.5">
+              {allDisplayedVariants.length > 0 ? (
+                allDisplayedVariants.map((variante, idx) => {
+                  const isConfirmed = variantesConfirmadas.includes(variante);
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => handleToggleVariant(variante)}
+                      className={`flex w-full items-start gap-2.5 rounded-2xl border p-3 text-left text-xs leading-relaxed transition ${
+                        isConfirmed
+                          ? "border-amber-400 bg-amber-500/20 text-amber-50 shadow-sm"
+                          : "border-amber-500/20 bg-slate-950/70 text-slate-300 hover:border-amber-500/40"
+                      }`}
+                    >
+                      {isConfirmed ? (
+                        <CheckSquare className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                      ) : (
+                        <Square className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+                      )}
+                      <div className="flex-1">
+                        <div className="mb-1 flex items-center gap-1.5">
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                              isConfirmed
+                                ? "bg-amber-400 text-slate-950"
+                                : "bg-slate-800 text-slate-400"
+                            }`}
+                          >
+                            {isConfirmed ? "Confirmada" : "Variação Sugerida"}
+                          </span>
+                        </div>
+                        <span>{variante}</span>
                       </div>
-                      <span>{variante}</span>
-                    </div>
-                  </button>
-                );
-              })
-            ) : (
-              <p className="text-xs text-slate-400">
-                Nenhuma variante rara específica registrada para esta emissão.
-              </p>
-            )}
+                    </button>
+                  );
+                })
+              ) : (
+                <p className="text-xs text-slate-400">
+                  Nenhuma variação registrada para esta emissão.
+                </p>
+              )}
+            </div>
           </div>
+
+          {/* Opção para inserir variações que não estejam listadas */}
+          <form
+            onSubmit={handleAddCustomVariant}
+            className="mt-4 flex items-center gap-2 border-t border-amber-500/20 pt-3.5"
+          >
+            <input
+              type="text"
+              value={customVariantText}
+              onChange={(e) => setCustomVariantText(e.target.value)}
+              placeholder="Inserir variação não listada (ex: Reverso Invertido, Cunho Quebrado)..."
+              className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={!customVariantText.trim()}
+              className="inline-flex shrink-0 items-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-xs font-bold text-slate-950 transition hover:bg-amber-400 disabled:opacity-40"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Adicionar
+            </button>
+          </form>
         </div>
 
-        {/* Conservação e Integridade Física */}
+        {/* Alertas de Conservação */}
         <div className="rounded-3xl border border-rose-500/30 bg-rose-500/5 p-5">
           <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-rose-300">
             <ShieldAlert className="h-4 w-4 text-rose-400" />
-            Alertas de Conservação (`alertas_conservacao`)
+            Alertas de Conservação
           </h3>
           <p className="mt-1 text-[11px] text-slate-400">
             Diagnóstico de superfície, pátina, PVC e cuidados de preservação:
@@ -659,7 +781,7 @@ export function TechnicalSheet({
                 className="inline-flex items-center gap-1 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Remover Exemplar #{currentExemplarIndex + 1}
+                Remover este Exemplar
               </button>
             )}
 
@@ -687,7 +809,7 @@ export function TechnicalSheet({
           <div>
             <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-300">
               <Award className="h-3.5 w-3.5 text-amber-400" />
-              Estado de Conservação (`estado_conservacao`)
+              Estado de Conservação
             </label>
             <select
               value={estadoConservacao}
@@ -704,7 +826,7 @@ export function TechnicalSheet({
 
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-300">
-              Valor Mín. (`valor_mercado_min_brl`)
+              Valor Mín.
             </label>
             <input
               type="number"
@@ -717,7 +839,7 @@ export function TechnicalSheet({
 
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-300">
-              Valor Máx. (`valor_mercado_max_brl`)
+              Valor Máx.
             </label>
             <input
               type="number"
@@ -733,7 +855,7 @@ export function TechnicalSheet({
           <div>
             <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-300">
               <Archive className="h-3.5 w-3.5 text-amber-400" />
-              Local de Armazenamento (`local_armazenamento`)
+              Local de Armazenamento
             </label>
             <input
               type="text"
@@ -747,7 +869,7 @@ export function TechnicalSheet({
           <div>
             <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-300">
               <StickyNote className="h-3.5 w-3.5 text-amber-400" />
-              Observações e Notas Livres (`observacoes`)
+              Observações e Notas Livres
             </label>
             <textarea
               rows={3}

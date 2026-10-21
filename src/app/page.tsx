@@ -8,7 +8,9 @@ import {
   NumismaticRecord,
 } from "@/types/numismatics";
 import {
+  autoBackfillCatalogIds,
   autoOptimizeDatabaseImages,
+  deduplicateLocalCollection,
   numismaticRepository,
 } from "@/lib/storage";
 import { ProcessedImage } from "@/lib/image-utils";
@@ -18,36 +20,6 @@ import {
 } from "@/components/CoinCapture";
 import { TechnicalSheet } from "@/components/TechnicalSheet";
 import { CollectionList } from "@/components/CollectionList";
-
-const DEMO_SPECIMEN: NumismaticClassification = {
-  nome: "1 Dollar — Eisenhower ('Ike Dollar')",
-  pais: "Estados Unidos da América",
-  valor_face: "1 Dollar (USD)",
-  ano: "1972",
-  casa_moeda: "Philadelphia (Sem letra monetária / No Mint Mark)",
-  material:
-    "Cuproníquel revestido (75% Cobre, 25% Níquel sobre núcleo de Cobre)",
-  peso_gramas: 22.68,
-  diametro_mm: 38.1,
-  bordo: "Serrilhado (Reeded)",
-  estado_conservacao: "Soberba (SOB) / About Uncirculated (AU-55)",
-  valor_mercado_min_brl: 45,
-  valor_mercado_max_brl: 120,
-  alertas_variantes_raras: [
-    "Eisenhower Dollar 1972 Tipo 2 (High Relief Reverse): cunhada em março de 1972 com matriz de reverso da versão Proof. Inspecione com lupa o globo terrestre abaixo da águia: no Tipo 2, as ilhas das Antilhas aparecem abaixo e à direita da Flórida. Se confirmado, o valor pode atingir R$ 600 a R$ 3.500+.",
-    "Eisenhower Dollar 1972 Tipo 1 vs Tipo 3: verifique o relevo da Terra e a posição das ilhas em relação à ponta da Flórida (exclusivo para emissões da Filadélfia sem letra monetária).",
-    "Batida Dupla no perfil ou legenda (Doubled Die Obverse - DDO): inspecione com lupa as letras de 'IN GOD WE TRUST' e 'LIBERTY'.",
-  ],
-  alertas_conservacao: [
-    "Evite acondicionar em envelopes plásticos flexíveis de PVC (policloreto de vinila): o plastificante reage com os 75% de cobre da liga, formando película esverdeada pegajosa (ataque por PVC).",
-    "Peça de grande módulo (38,1 mm) e peso elevado (22,68 g), muito propensa a 'bag marks' (marcas de contato na bochecha de Eisenhower e no peito da águia). Manuseie exclusivamente pelo bordo serrilhado.",
-  ],
-  curiosidades:
-    "Emitida entre 1971 e 1978, a moeda homenageia simultaneamente o presidente e general Dwight D. Eisenhower (anverso) e a missão Apollo 11 de 1969 (reverso), cujo emblema — a águia pousando na superfície lunar com um ramo de oliveira — foi adaptado pelo gravador-chefe Frank Gasparro a partir do insígnia oficial desenhada pelo astronauta Michael Collins.\n\nNo ano de 1972 na Casa da Moeda da Filadélfia, foram cunhadas mais de 75,8 milhões de unidades ao todo, mas a transição entre matrizes de cunho criou três variedades distintas do planeta Terra ao fundo (Tipos 1, 2 e 3), tornando o Tipo 2 uma das variantes modernas mais caçadas da numismática norte-americana.",
-  observacoes:
-    "Exemplar de demonstração carregado no UnderBed para inspeção de variantes interativas e múltiplos exemplares.",
-  local_armazenamento: "Álbum Grandes Módulos • Folha 01 • Coin Holder 38.5mm",
-};
 
 type ActiveTab = "scanner" | "acervo" | "ficha";
 
@@ -64,10 +36,11 @@ export default function HomePage() {
   const [apiError, setApiError] = useState<string | null>(null);
 
   const loadRecords = async () => {
+    deduplicateLocalCollection();
     const list = await numismaticRepository.list();
     setRecords(list);
     setSelectedRecord((prev) =>
-      prev ? list.find((item) => item.id === prev.id) ?? prev : null
+      prev ? list.find((item) => item.id === prev.id) ?? null : null
     );
   };
 
@@ -77,7 +50,39 @@ export default function HomePage() {
       console.log("Otimização automática do banco local concluída");
       loadRecords();
     });
+    autoBackfillCatalogIds().then((updated) => {
+      if (updated) {
+        deduplicateLocalCollection();
+        loadRecords();
+      }
+    });
   }, []);
+
+  // Impede que o botão de voltar físico/navegador saia do PWA para uma página externa,
+  // redirecionando sempre para a tela principal do acervo por estado interno.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.history.replaceState({ underbedView: activeTab }, "");
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handlePopState = () => {
+      setActiveTab("acervo");
+      window.history.pushState({ underbedView: "acervo" }, "");
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const navigateToTab = (tab: ActiveTab) => {
+    setActiveTab(tab);
+    if (typeof window !== "undefined") {
+      window.history.pushState({ underbedView: tab }, "");
+    }
+  };
 
   const totalExemplares = records.reduce(
     (acc, r) => acc + (r.exemplares?.length || 1),
@@ -146,23 +151,7 @@ export default function HomePage() {
         `Moeda já existente no catálogo UnderBed! Um novo exemplar físico foi adicionado à ficha de "${record.nome}".`
       );
     }
-    setActiveTab("ficha");
-  };
-
-  const handleLoadDemo = async () => {
-    setStatusBanner(null);
-    const { record, exemplarId, isNewExemplarOnExistingRef } =
-      await numismaticRepository.create(DEMO_SPECIMEN);
-    const updatedList = await numismaticRepository.list();
-    setRecords(updatedList);
-    setSelectedRecord(record);
-    setSelectedExemplarId(exemplarId);
-    if (isNewExemplarOnExistingRef) {
-      setStatusBanner(
-        `Novo exemplar físico adicionado à ficha existente de "${record.nome}" (${record.exemplares.length} exemplares no total).`
-      );
-    }
-    setActiveTab("ficha");
+    navigateToTab("ficha");
   };
 
   const handleUpdateExemplar = async (
@@ -178,7 +167,7 @@ export default function HomePage() {
         | "observacoes"
         | "variantes_confirmadas"
       >
-    >
+    > & { alertas_variantes_raras?: string[] }
   ) => {
     const updated = await numismaticRepository.updateExemplar(
       recordId,
@@ -276,7 +265,7 @@ export default function HomePage() {
 
         <button
           type="button"
-          onClick={() => setActiveTab("acervo")}
+          onClick={() => navigateToTab("acervo")}
           className="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-amber-500/40"
         >
           <Library className="h-3.5 w-3.5 text-amber-400" />
@@ -316,7 +305,6 @@ export default function HomePage() {
           <CoinCapture
             onAnalyzeImages={handleAnalyzeImages}
             onConfirmSave={handleConfirmSave}
-            onLoadDemo={handleLoadDemo}
             isLoading={isLoading}
           />
         )}
@@ -328,7 +316,7 @@ export default function HomePage() {
               setSelectedRecord(rec);
               setSelectedExemplarId(rec.exemplares?.[0]?.id || null);
               setStatusBanner(null);
-              setActiveTab("ficha");
+              navigateToTab("ficha");
             }}
             onExportJson={handleExportJson}
             onRecordsOptimized={loadRecords}
@@ -343,7 +331,7 @@ export default function HomePage() {
             onAddExemplar={handleAddExemplar}
             onDeleteExemplar={handleDeleteExemplar}
             onDeleteRecord={handleDeleteRecord}
-            onBack={() => setActiveTab("acervo")}
+            onBack={() => navigateToTab("acervo")}
           />
         )}
       </main>
@@ -353,7 +341,7 @@ export default function HomePage() {
         <div className="mx-auto flex max-w-2xl items-center justify-around px-4 py-2">
           <button
             type="button"
-            onClick={() => setActiveTab("scanner")}
+            onClick={() => navigateToTab("scanner")}
             className={`flex flex-1 flex-col items-center gap-1 rounded-xl py-1.5 text-xs font-medium transition ${
               activeTab === "scanner"
                 ? "text-amber-400"
@@ -366,7 +354,7 @@ export default function HomePage() {
 
           <button
             type="button"
-            onClick={() => setActiveTab("acervo")}
+            onClick={() => navigateToTab("acervo")}
             className={`flex flex-1 flex-col items-center gap-1 rounded-xl py-1.5 text-xs font-medium transition ${
               activeTab === "acervo"
                 ? "text-amber-400"
@@ -380,7 +368,7 @@ export default function HomePage() {
           {selectedRecord && (
             <button
               type="button"
-              onClick={() => setActiveTab("ficha")}
+              onClick={() => navigateToTab("ficha")}
               className={`flex flex-1 flex-col items-center gap-1 rounded-xl py-1.5 text-xs font-medium transition ${
                 activeTab === "ficha"
                   ? "text-amber-400"
