@@ -1,0 +1,19 @@
+{
+  "name": "UnderBed — Acervo & Classificação Numismática",
+  "short_name": "UnderBed",
+  "description": "UnderBed: Catalogação, avaliação técnica, variantes e gestão de múltiplos exemplares de moedas e cédulas com IA.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#090a0f",
+  "theme_color": "#d4af37",
+  "orientation": "portrait-primary",
+  "categories": ["utilities", "education", "finance"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
