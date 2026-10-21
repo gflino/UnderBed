@@ -82,10 +82,14 @@ function normalizeIdentityKey(item: {
 function syncRecordWithPrimaryExemplar(
   record: NumismaticRecord
 ): NumismaticRecord {
-  const sanitized = { ...(record as NumismaticRecord & { justificativa_lados?: unknown }) };
-  delete sanitized.justificativa_lados;
-  delete sanitized.indice_anverso;
-  delete sanitized.indice_reverso;
+ const sanitized = { ...(record as NumismaticRecord & { 
+  justificativa_lados?: unknown;
+  indice_anverso?: unknown;
+  indice_reverso?: unknown;
+}) };
+delete sanitized.justificativa_lados;
+delete sanitized.indice_anverso;
+delete sanitized.indice_reverso;
 
   const primary = sanitized.exemplares[0];
   if (!primary) return sanitized;
