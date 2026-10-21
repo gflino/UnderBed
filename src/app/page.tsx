@@ -229,6 +229,29 @@ export default function HomePage() {
     setActiveTab("acervo");
   };
 
+  const handleMergeWithRecord = async (
+    sourceRecordId: string,
+    targetRecordId: string,
+    onlyExemplarId?: string
+  ) => {
+    const mergedTarget = await numismaticRepository.mergeRecords(
+      sourceRecordId,
+      targetRecordId,
+      onlyExemplarId
+    );
+    const updatedList = await numismaticRepository.list();
+    setRecords(updatedList);
+    if (mergedTarget) {
+      setSelectedRecord(mergedTarget);
+      const lastExemplar =
+        mergedTarget.exemplares[mergedTarget.exemplares.length - 1];
+      setSelectedExemplarId(lastExemplar?.id || null);
+      setStatusBanner(
+        `Exemplar(es) transferido(s) e mesclado(s) com sucesso em "${mergedTarget.nome}" (${mergedTarget.friendly_code})!`
+      );
+    }
+  };
+
   const handleExportJson = async () => {
     const json = await numismaticRepository.exportJson();
     const blob = new Blob([json], { type: "application/json" });
@@ -326,10 +349,12 @@ export default function HomePage() {
         {activeTab === "ficha" && selectedRecord && (
           <TechnicalSheet
             record={selectedRecord}
+            otherRecords={records}
             initialExemplarId={selectedExemplarId}
             onUpdateExemplar={handleUpdateExemplar}
             onAddExemplar={handleAddExemplar}
             onDeleteExemplar={handleDeleteExemplar}
+            onMergeWithRecord={handleMergeWithRecord}
             onDeleteRecord={handleDeleteRecord}
             onBack={() => navigateToTab("acervo")}
           />

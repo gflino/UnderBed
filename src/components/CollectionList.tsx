@@ -24,6 +24,7 @@ import {
   autoBackfillCatalogIds,
   autoOptimizeDatabaseImages,
   deduplicateLocalCollection,
+  generateFriendlyCode,
   importCollectionData,
   parseAndValidateBackupJson,
 } from "@/lib/storage";
@@ -35,11 +36,11 @@ interface CollectionListProps {
   onRecordsOptimized?: () => void;
 }
 
-type SortField = "km" | "pais" | "um" | "ano" | "valor_face";
+type SortField = "friendly_code" | "pais" | "um" | "ano" | "valor_face";
 type SortDirection = "asc" | "desc";
 
 const SORT_OPTIONS: Array<{ id: SortField; label: string }> = [
-  { id: "km", label: "ID (KM#)" },
+  { id: "friendly_code", label: "Código Amigável" },
   { id: "pais", label: "País" },
   { id: "um", label: "Unidade Monetária (UM)" },
   { id: "ano", label: "Ano" },
@@ -94,7 +95,7 @@ export function CollectionList({
 }: CollectionListProps) {
   const [query, setQuery] = useState("");
   const [selectedUM, setSelectedUM] = useState<string>("Todas");
-  const [sortBy, setSortBy] = useState<SortField>("km");
+  const [sortBy, setSortBy] = useState<SortField>("friendly_code");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -162,12 +163,17 @@ export function CollectionList({
         return false;
       }
       if (!q) return true;
+      const friendlyCode = (
+        item.friendly_code || generateFriendlyCode(item)
+      ).toLowerCase();
       return (
+        friendlyCode.includes(q) ||
         item.nome.toLowerCase().includes(q) ||
         item.pais.toLowerCase().includes(q) ||
         item.ano.toLowerCase().includes(q) ||
         (item.unidade_monetaria || "").toLowerCase().includes(q) ||
         (item.krause_id || "").toLowerCase().includes(q) ||
+        (item.numista_id || "").toLowerCase().includes(q) ||
         item.material.toLowerCase().includes(q) ||
         item.local_armazenamento.toLowerCase().includes(q) ||
         (item.exemplares || []).some(
@@ -182,12 +188,10 @@ export function CollectionList({
     const dir = sortDirection === "asc" ? 1 : -1;
 
     return [...matching].sort((a, b) => {
-      if (sortBy === "km") {
-        const kmA = (a.krause_id || "").trim();
-        const kmB = (b.krause_id || "").trim();
-        if (!kmA && kmB) return 1;
-        if (kmA && !kmB) return -1;
-        const cmp = kmA.localeCompare(kmB, "pt-BR", {
+      if (sortBy === "friendly_code") {
+        const codeA = (a.friendly_code || generateFriendlyCode(a)).trim();
+        const codeB = (b.friendly_code || generateFriendlyCode(b)).trim();
+        const cmp = codeA.localeCompare(codeB, "pt-BR", {
           numeric: true,
           sensitivity: "base",
         });
@@ -630,14 +634,12 @@ export function CollectionList({
                   )}
                 </div>
 
-                {/* Informações Principais na ordem: código KM, País, Unidade Monetária, Ano */}
+                {/* Informações Principais na ordem: Código Amigável Universal em evidência máxima, País, Unidade Monetária, Ano */}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {item.krause_id && (
-                      <span className="text-xs font-semibold text-amber-400">
-                        {item.krause_id} •
-                      </span>
-                    )}
+                    <span className="inline-flex items-center rounded-md border border-amber-400/50 bg-amber-500/20 px-2 py-0.5 font-mono text-[11px] font-extrabold tracking-wide text-amber-200 shadow-sm">
+                      {item.friendly_code || generateFriendlyCode(item)}
+                    </span>
 
                     <span className="truncate text-xs font-semibold text-amber-400">
                       {item.pais}

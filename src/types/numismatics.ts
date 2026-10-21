@@ -51,14 +51,16 @@ export interface NumismaticExemplar {
 
 /**
  * Ficha Técnica de Referência (dados catalográficos compartilhados) + lista de exemplares físicos.
- * Utiliza exclusivamente:
+ * Utiliza:
  * - `id`: identificador único do registro (card)
- * - `krause_id`: código de catálogo visível (KM# / P#)
- * - `numista_id`: código de referência oculto (N#)
+ * - `friendly_code`: Código Amigável Universal ([Tipo]-[PaísISO3]-[UM]-[Ano]-[Valor], ex: 'C-BRA-CRU-1977-50C')
+ * - `krause_id`: código de catálogo Krause/Pick (ex: 'KM# 594' / 'P# 102')
+ * - `numista_id`: código de referência Numista (ex: 'N# 4512')
  * - `exemplares[].id`: identificador único de cada exemplar físico
  */
 export interface NumismaticRecord {
   id: string;
+  friendly_code?: string;
   created_at: string;
   updated_at: string;
   nome: string;

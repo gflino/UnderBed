@@ -25,11 +25,16 @@ import {
   CheckSquare,
   Square,
   Tag,
+  GitMerge,
+  Search,
+  X,
 } from "lucide-react";
 import { NumismaticExemplar, NumismaticRecord } from "@/types/numismatics";
+import { generateFriendlyCode } from "@/lib/storage";
 
 interface TechnicalSheetProps {
   record: NumismaticRecord;
+  otherRecords?: NumismaticRecord[];
   initialExemplarId?: string | null;
   onUpdateExemplar: (
     recordId: string,
@@ -60,6 +65,11 @@ interface TechnicalSheetProps {
     }
   ) => Promise<string | null>;
   onDeleteExemplar: (recordId: string, exemplarId: string) => Promise<void>;
+  onMergeWithRecord?: (
+    sourceRecordId: string,
+    targetRecordId: string,
+    onlyExemplarId?: string
+  ) => Promise<void>;
   onDeleteRecord?: (id: string) => Promise<void>;
   onBack?: () => void;
 }
@@ -84,18 +94,26 @@ const formatBRL = (value: number) =>
 
 export function TechnicalSheet({
   record,
+  otherRecords = [],
   initialExemplarId,
   onUpdateExemplar,
   onAddExemplar,
   onDeleteExemplar,
+  onMergeWithRecord,
   onDeleteRecord,
   onBack,
 }: TechnicalSheetProps) {
   const router = useRouter();
   const exemplares = record.exemplares || [];
+  const friendlyCode = record.friendly_code || generateFriendlyCode(record);
   const [selectedExemplarId, setSelectedExemplarId] = useState<string>(
     initialExemplarId || exemplares[0]?.id || ""
   );
+  const [showMergeModal, setShowMergeModal] = useState(false);
+  const [mergeSearch, setMergeSearch] = useState("");
+  const [mergeOnlyCurrentExemplar, setMergeOnlyCurrentExemplar] =
+    useState(false);
+  const [isMerging, setIsMerging] = useState(false);
 
   const currentExemplar: NumismaticExemplar =
     exemplares.find((ex) => ex.id === selectedExemplarId) ||
@@ -266,10 +284,46 @@ export function TechnicalSheet({
     }
   };
 
+  const filteredMergeCandidates = useMemo(() => {
+    const candidates = otherRecords.filter((r) => r.id !== record.id);
+    const q = mergeSearch.trim().toLowerCase();
+    if (!q) return candidates;
+    return candidates.filter((item) => {
+      const code = (
+        item.friendly_code || generateFriendlyCode(item)
+      ).toLowerCase();
+      return (
+        code.includes(q) ||
+        item.nome.toLowerCase().includes(q) ||
+        item.pais.toLowerCase().includes(q) ||
+        item.ano.toLowerCase().includes(q) ||
+        (item.unidade_monetaria || "").toLowerCase().includes(q) ||
+        (item.krause_id || "").toLowerCase().includes(q)
+      );
+    });
+  }, [otherRecords, record.id, mergeSearch]);
+
+  const handleSelectTargetForMerge = async (targetRecordId: string) => {
+    if (!onMergeWithRecord) return;
+    setIsMerging(true);
+    try {
+      await onMergeWithRecord(
+        record.id,
+        targetRecordId,
+        mergeOnlyCurrentExemplar && exemplares.length > 1
+          ? currentExemplar.id
+          : undefined
+      );
+      setShowMergeModal(false);
+    } finally {
+      setIsMerging(false);
+    }
+  };
+
   return (
     <div className="space-y-5 pb-8">
       {/* Barra superior de navegação (sempre visível e gerenciada internamente sem history.back) */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
           onClick={handleBackToCollection}
@@ -279,28 +333,170 @@ export function TechnicalSheet({
           Voltar ao Acervo
         </button>
 
-        {onDeleteRecord && (
-          <button
-            type="button"
-            onClick={() => onDeleteRecord(record.id)}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            Excluir Ficha Completa
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {onMergeWithRecord && otherRecords.some((r) => r.id !== record.id) && (
+            <button
+              type="button"
+              onClick={() => {
+                setMergeSearch("");
+                setMergeOnlyCurrentExemplar(false);
+                setShowMergeModal(true);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-500/40 bg-indigo-500/15 px-3 py-2 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/25"
+            >
+              <GitMerge className="h-3.5 w-3.5 text-indigo-400" />
+              Mesclar com outro card
+            </button>
+          )}
+
+          {onDeleteRecord && (
+            <button
+              type="button"
+              onClick={() => onDeleteRecord(record.id)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Excluir Ficha Completa
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Modal de Fusão Manual de Cards / Mover Exemplar */}
+      {showMergeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-3xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/20 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-300">
+                  <GitMerge className="h-3 w-3" />
+                  Fusão Manual de Cards / Mover Exemplar
+                </span>
+                <h3 className="mt-1.5 text-base font-bold text-slate-100">
+                  Transferir de{" "}
+                  <span className="font-mono text-amber-300">
+                    {friendlyCode}
+                  </span>
+                </h3>
+                <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                  Selecione abaixo o card correto do seu acervo para unificar os
+                  exemplares físicos e apagar o card duplicado:
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMergeModal(false)}
+                disabled={isMerging}
+                className="rounded-xl p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {exemplares.length > 1 && (
+              <div className="mt-3 flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-950/80 p-2.5 text-xs text-slate-300">
+                <input
+                  id="mergeOnlyCurrent"
+                  type="checkbox"
+                  checked={mergeOnlyCurrentExemplar}
+                  onChange={(e) =>
+                    setMergeOnlyCurrentExemplar(e.target.checked)
+                  }
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-amber-500"
+                />
+                <label htmlFor="mergeOnlyCurrent" className="cursor-pointer">
+                  Mover apenas o{" "}
+                  <strong className="text-amber-300">
+                    Exemplar #{currentExemplarIndex + 1}
+                  </strong>{" "}
+                  (manter os outros {exemplares.length - 1} neste card)
+                </label>
+              </div>
+            )}
+
+            <div className="relative mt-3">
+              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={mergeSearch}
+                onChange={(e) => setMergeSearch(e.target.value)}
+                placeholder="Buscar card destino por código amigável, nome, país ou ano..."
+                className="w-full rounded-2xl border border-slate-800 bg-slate-950 py-2.5 pl-10 pr-4 text-xs text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="mt-3 flex-1 space-y-2 overflow-y-auto pr-1">
+              {filteredMergeCandidates.length === 0 ? (
+                <p className="py-6 text-center text-xs text-slate-400">
+                  Nenhum outro card encontrado para o filtro informado.
+                </p>
+              ) : (
+                filteredMergeCandidates.map((candidate) => {
+                  const candidateCode =
+                    candidate.friendly_code || generateFriendlyCode(candidate);
+                  const candidateCount = candidate.exemplares?.length || 1;
+                  return (
+                    <button
+                      key={candidate.id}
+                      type="button"
+                      disabled={isMerging}
+                      onClick={() => handleSelectTargetForMerge(candidate.id)}
+                      className="flex w-full items-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/90 p-3 text-left transition hover:border-amber-500/50 hover:bg-slate-900 disabled:opacity-50"
+                    >
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
+                        {candidate.anverso_image ? (
+                          <img
+                            src={candidate.anverso_image}
+                            alt={candidate.nome}
+                            className="h-full w-full object-contain"
+                          />
+                        ) : (
+                          <Coins className="h-5 w-5 text-amber-400/70" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="rounded border border-amber-400/40 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-amber-200">
+                            {candidateCode}
+                          </span>
+                          <span className="text-[11px] font-semibold text-amber-400">
+                            {candidate.pais} • {candidate.ano}
+                          </span>
+                          <span className="rounded bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300">
+                            {candidateCount}{" "}
+                            {candidateCount === 1 ? "exemplar" : "exemplares"}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate text-xs font-bold text-slate-100">
+                          {candidate.nome}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowMergeModal(false)}
+              disabled={isMerging}
+              className="mt-4 w-full rounded-xl border border-slate-700 bg-slate-800/80 py-2.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-800"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Cabeçalho da Ficha Técnica de Referência */}
       <div className="relative overflow-hidden rounded-3xl border border-amber-500/30 bg-gradient-to-br from-slate-900 via-slate-900 to-amber-950/30 p-5 shadow-xl">
-        {/* Badges Superiores na ordem solicitada: Código KM, País, Unidade Monetária, Ano */}
+        {/* Badges Superiores com Código Amigável Universal em evidência máxima, País, Unidade Monetária, Ano */}
         <div className="flex flex-wrap items-center gap-2">
-          {record.krause_id && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/20 px-3 py-1 text-xs font-bold text-amber-200">
-              <Tag className="h-3.5 w-3.5 text-amber-400" />
-              🏷️ {record.krause_id}
-            </span>
-          )}
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/60 bg-amber-500/25 px-3.5 py-1 font-mono text-xs font-extrabold tracking-wide text-amber-100 shadow-sm">
+            <Tag className="h-3.5 w-3.5 text-amber-400" />
+            {friendlyCode}
+          </span>
           <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-500/15 px-3 py-1 text-xs font-semibold text-amber-300">
             <Globe2 className="h-3.5 w-3.5" />
             {record.pais}
@@ -331,6 +527,28 @@ export function TechnicalSheet({
           da Moeda:{" "}
           <strong className="text-slate-200">{record.casa_moeda}</strong>
         </p>
+
+        {/* Informações Adicionais Secundárias: KM# e Numista ID (N#) para consulta rápida */}
+        {(record.krause_id || record.numista_id) && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400">
+            {record.krause_id && (
+              <span>
+                Catálogo Krause/Pick:{" "}
+                <strong className="font-mono text-slate-200">
+                  {record.krause_id}
+                </strong>
+              </span>
+            )}
+            {record.numista_id && (
+              <span>
+                Numista ID:{" "}
+                <strong className="font-mono text-slate-200">
+                  {record.numista_id}
+                </strong>
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Seletor rápido de Exemplares no topo quando houver mais de 1 exemplar */}
         {exemplares.length > 1 && (
@@ -443,6 +661,21 @@ export function TechnicalSheet({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {onMergeWithRecord && otherRecords.some((r) => r.id !== record.id) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMergeSearch("");
+                  setMergeOnlyCurrentExemplar(exemplares.length > 1);
+                  setShowMergeModal(true);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-500/40 bg-indigo-500/15 px-3 py-1.5 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/25"
+              >
+                <GitMerge className="h-3.5 w-3.5 text-indigo-400" />
+                Mover Exemplar
+              </button>
+            )}
+
             {exemplares.length > 1 && (
               <button
                 type="button"

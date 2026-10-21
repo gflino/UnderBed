@@ -55,6 +55,11 @@ export interface CollectionRepository {
     recordId: string,
     exemplarId: string
   ): Promise<NumismaticRecord | null>;
+  mergeRecords(
+    sourceRecordId: string,
+    targetRecordId: string,
+    onlyExemplarId?: string
+  ): Promise<NumismaticRecord | null>;
   remove(id: string): Promise<void>;
   exportJson(): Promise<string>;
   importCollectionData(
@@ -76,20 +81,335 @@ const normalize = (str?: string) =>
     .toLowerCase()
     .trim();
 
-export const getCoinTypeKey = (record: Partial<NumismaticRecord>): string => {
-  const cleanYear = String(record.ano ?? "").trim();
-  const cleanKrause = normalize(record.krause_id).replace(/[^a-z0-9]/g, "");
-  if (
-    cleanKrause &&
-    cleanKrause !== "na" &&
-    cleanKrause !== "desconhecido" &&
-    cleanKrause !== "none"
-  ) {
-    return `km_${cleanKrause}_${cleanYear}`;
+const COUNTRY_ISO3_MAP: Record<string, string> = {
+  brasil: "BRA",
+  brazil: "BRA",
+  "republica federativa do brasil": "BRA",
+  "estados unidos do brasil": "BRA",
+  "imperio do brasil": "BRA",
+  "reino unido de portugal, brasil e algarves": "BRA",
+  "coreia do sul": "KOR",
+  "republica da coreia": "KOR",
+  "south korea": "KOR",
+  coreia: "KOR",
+  korea: "KOR",
+  "coreia do norte": "PRK",
+  "north korea": "PRK",
+  "estados unidos": "USA",
+  "estados unidos da america": "USA",
+  eua: "USA",
+  usa: "USA",
+  "united states": "USA",
+  "united states of america": "USA",
+  portugal: "PRT",
+  "republica portuguesa": "PRT",
+  argentina: "ARG",
+  "republica argentina": "ARG",
+  uruguai: "URY",
+  uruguay: "URY",
+  paraguai: "PRY",
+  paraguay: "PRY",
+  chile: "CHL",
+  bolivia: "BOL",
+  peru: "PER",
+  colombia: "COL",
+  venezuela: "VEN",
+  equador: "ECU",
+  ecuador: "ECU",
+  mexico: "MEX",
+  "estados unidos mexicanos": "MEX",
+  canada: "CAN",
+  "reino unido": "GBR",
+  "gra-bretanha": "GBR",
+  "gra bretanha": "GBR",
+  inglaterra: "GBR",
+  "united kingdom": "GBR",
+  "great britain": "GBR",
+  alemanha: "DEU",
+  germany: "DEU",
+  "republica federal da alemanha": "DEU",
+  "imperio alemao": "DEU",
+  franca: "FRA",
+  france: "FRA",
+  "republica francesa": "FRA",
+  italia: "ITA",
+  italy: "ITA",
+  "republica italiana": "ITA",
+  espanha: "ESP",
+  spain: "ESP",
+  suica: "CHE",
+  switzerland: "CHE",
+  "paises baixos": "NLD",
+  holanda: "NLD",
+  netherlands: "NLD",
+  belgica: "BEL",
+  belgium: "BEL",
+  austria: "AUT",
+  polonia: "POL",
+  poland: "POL",
+  grecia: "GRC",
+  greece: "GRC",
+  turquia: "TUR",
+  turkey: "TUR",
+  russia: "RUS",
+  "federacao russa": "RUS",
+  "imperio russo": "RUS",
+  "uniao sovietica": "SUN",
+  urss: "SUN",
+  ussr: "SUN",
+  japao: "JPN",
+  japan: "JPN",
+  china: "CHN",
+  "republica popular da china": "CHN",
+  india: "IND",
+  australia: "AUS",
+  "nova zelandia": "NZL",
+  "new zealand": "NZL",
+  "africa do sul": "ZAF",
+  "south africa": "ZAF",
+  egito: "EGY",
+  egypt: "EGY",
+  israel: "ISR",
+  cuba: "CUB",
+  suecia: "SWE",
+  sweden: "SWE",
+  noruega: "NOR",
+  norway: "NOR",
+  dinamarca: "DNK",
+  denmark: "DNK",
+  finlandia: "FIN",
+  finland: "FIN",
+  irlanda: "IRL",
+  ireland: "IRL",
+  "uniao europeia": "EUR",
+  "zona do euro": "EUR",
+};
+
+const UM_CODE_MAP: Record<string, string> = {
+  "cruzeiro novo": "CRN",
+  "cruzeiros novos": "CRN",
+  "cruzeiro real": "CRV",
+  "cruzeiros reais": "CRV",
+  cruzeiro: "CRU",
+  cruzeiros: "CRU",
+  "cruzado novo": "CZN",
+  "cruzados novos": "CZN",
+  cruzado: "CRZ",
+  cruzados: "CRZ",
+  reis: "REI",
+  "real antigo": "REI",
+  "mil-reis": "REI",
+  "mil reis": "REI",
+  "conto de reis": "REI",
+  real: "BRL",
+  reais: "BRL",
+  "real brasileiro": "BRL",
+  "won sul-coreano": "KRW",
+  "won sul coreano": "KRW",
+  "won coreano": "KRW",
+  "south korean won": "KRW",
+  won: "KRW",
+  "won norte-coreano": "KPW",
+  "dolar americano": "USD",
+  "dolar dos estados unidos": "USD",
+  "dolar norte-americano": "USD",
+  "us dollar": "USD",
+  dollar: "USD",
+  dolar: "USD",
+  "dolar canadense": "CAD",
+  "dolar australiano": "AUD",
+  euro: "EUR",
+  euros: "EUR",
+  "libra esterlina": "GBP",
+  libra: "GBP",
+  pound: "GBP",
+  iene: "JPY",
+  ienejapones: "JPY",
+  yen: "JPY",
+  yuan: "CNY",
+  renminbi: "CNY",
+  "peso argentino": "ARS",
+  "peso uruguaio": "UYU",
+  "peso chileno": "CLP",
+  "peso mexicano": "MXN",
+  "peso colombiano": "COP",
+  "peso cubano": "CUP",
+  peso: "PES",
+  pesos: "PES",
+  guarani: "PYG",
+  boliviano: "BOB",
+  sol: "PEN",
+  "novo sol": "PEN",
+  inti: "PEN",
+  bolivar: "VES",
+  escudo: "ESC",
+  "escudo portugues": "ESC",
+  peseta: "PTA",
+  "franco suico": "CHF",
+  "franco frances": "FRF",
+  franco: "FRF",
+  "marco alemao": "DEM",
+  "deutsche mark": "DEM",
+  reichsmark: "DEM",
+  marco: "DEM",
+  "lira italiana": "ITL",
+  lira: "ITL",
+  rublo: "RUB",
+  rupia: "INR",
+  rand: "ZAR",
+};
+
+function resolveCountryIso3(pais?: string): string {
+  const norm = normalize(pais);
+  if (!norm) return "UNK";
+  if (COUNTRY_ISO3_MAP[norm]) return COUNTRY_ISO3_MAP[norm];
+  for (const [key, code] of Object.entries(COUNTRY_ISO3_MAP)) {
+    if (norm.includes(key)) return code;
   }
-  const cleanPais = normalize(record.pais);
-  const cleanUM = normalize(record.unidade_monetaria).replace(/\s+/g, "");
-  return `fb_${cleanPais}_${cleanYear}_${cleanUM}`;
+  const letters = norm.replace(/[^a-z]/g, "").toUpperCase();
+  return (letters.slice(0, 3) || "UNK").padEnd(3, "X");
+}
+
+function resolveBrazilianUMByYear(yearNum: number): string {
+  if (!Number.isFinite(yearNum) || yearNum <= 0) return "BRL";
+  if (yearNum <= 1942) return "REI";
+  if (yearNum >= 1943 && yearNum <= 1966) return "CRU";
+  if (yearNum >= 1967 && yearNum <= 1969) return "CRN";
+  if (yearNum >= 1970 && yearNum <= 1985) return "CRU";
+  if (yearNum >= 1986 && yearNum <= 1988) return "CRZ";
+  if (yearNum === 1989) return "CZN";
+  if (yearNum >= 1990 && yearNum <= 1992) return "CRU";
+  if (yearNum === 1993) return "CRV";
+  return "BRL";
+}
+
+function resolveUMCode(
+  record: Partial<NumismaticRecord>,
+  countryIso3: string,
+  yearStr: string
+): string {
+  const rawUM = normalize(record.unidade_monetaria);
+  if (rawUM && rawUM !== "centavo" && rawUM !== "centavos") {
+    if (UM_CODE_MAP[rawUM]) return UM_CODE_MAP[rawUM];
+    for (const [key, code] of Object.entries(UM_CODE_MAP)) {
+      if (rawUM.includes(key)) return code;
+    }
+    const letters = rawUM.replace(/[^a-z]/g, "").toUpperCase();
+    if (letters.length >= 2) return letters.slice(0, 3);
+  }
+
+  // Tenta inferir a partir de valor_face ou nome
+  const combined = normalize(`${record.valor_face || ""} ${record.nome || ""}`);
+  for (const [key, code] of Object.entries(UM_CODE_MAP)) {
+    if (new RegExp(`\\b${key}\\b`).test(combined)) {
+      return code;
+    }
+  }
+
+  if (countryIso3 === "BRA") {
+    return resolveBrazilianUMByYear(Number(yearStr));
+  }
+  if (countryIso3 === "KOR") return "KRW";
+  if (countryIso3 === "USA") return "USD";
+  if (countryIso3 === "GBR") return "GBP";
+  if (countryIso3 === "JPN") return "JPY";
+
+  return "GEN";
+}
+
+function resolveCleanFaceValue(record: Partial<NumismaticRecord>): string {
+  const raw = normalize(record.valor_face || record.nome || "");
+  if (!raw) return "0";
+
+  const isSubunitWord =
+    /\b(centavo|centavos|cent|cents|centime|centimes|centesimo|centesimos|centesimi|pfennig|kopek|kopeck|sen|penny|pence|agora)\b/.test(
+      raw
+    );
+
+  // Frações explícitas (ex: 1/2)
+  const fractionMatch = raw.match(/(\d+)\s*\/\s*(\d+)/);
+  if (fractionMatch) {
+    const num = Number(fractionMatch[1]);
+    const den = Number(fractionMatch[2]);
+    if (den > 0) {
+      const ratio = num / den;
+      if (ratio < 1) {
+        return `${Math.round(ratio * 100)}C`;
+      }
+    }
+  }
+
+  const numTokenMatch = raw.match(/\d+(?:[.,]\d+)*/);
+  if (!numTokenMatch) return "0";
+  const token = numTokenMatch[0];
+
+  let numericValue = 0;
+  if (token.includes(",")) {
+    numericValue = Number(token.replace(/\./g, "").replace(",", "."));
+  } else if (/^\d{1,3}(\.\d{3})+$/.test(token)) {
+    numericValue = Number(token.replace(/\./g, ""));
+  } else {
+    numericValue = Number(token);
+  }
+
+  if (!Number.isFinite(numericValue) || numericValue <= 0) return "0";
+
+  // Se o número for decimal menor que 1 (ex: "0,50 Cruzeiro" -> 50C)
+  if (numericValue > 0 && numericValue < 1) {
+    return `${Math.round(numericValue * 100)}C`;
+  }
+
+  if (isSubunitWord) {
+    return `${Math.round(numericValue)}C`;
+  }
+
+  return Number.isInteger(numericValue)
+    ? String(numericValue)
+    : String(numericValue).replace(".", "_");
+}
+
+/**
+ * Gera o Código Amigável Universal independente de idioma no formato:
+ * `[Tipo]-[PaísISO3]-[UM]-[Ano]-[Valor]` (ex: `C-BRA-CRU-1977-50C`).
+ */
+export const generateFriendlyCode = (
+  record: Partial<NumismaticRecord>
+): string => {
+  const krauseNorm = normalize(record.krause_id);
+  const materialNorm = normalize(record.material);
+  const bordoNorm = normalize(record.bordo);
+  const nomeNorm = normalize(record.nome);
+
+  const isBanknote =
+    /^p\s*#?\s*\d/.test(krauseNorm) ||
+    bordoNorm.includes("cedula") ||
+    materialNorm.includes("papel") ||
+    materialNorm.includes("polimero") ||
+    materialNorm.includes("fiduci") ||
+    nomeNorm.includes("cedula");
+
+  const tipo = isBanknote ? "B" : "C";
+  const paisIso3 = resolveCountryIso3(record.pais);
+  const yearMatch = String(record.ano ?? "").match(/\d{3,4}/);
+  const cleanYear = yearMatch
+    ? yearMatch[0]
+    : String(record.ano ?? "")
+        .trim()
+        .replace(/[^a-zA-Z0-9]/g, "")
+        .toUpperCase() || "0000";
+  const umCode = resolveUMCode(record, paisIso3, cleanYear);
+  const cleanValue = resolveCleanFaceValue(record);
+
+  return `${tipo}-${paisIso3}-${umCode}-${cleanYear}-${cleanValue}`;
+};
+
+export const getCoinTypeKey = (record: Partial<NumismaticRecord>): string => {
+  const friendly = (
+    record.friendly_code?.trim() || generateFriendlyCode(record)
+  )
+    .toUpperCase()
+    .trim();
+  return friendly;
 };
 
 function sanitizeExemplar(
@@ -167,7 +487,7 @@ function syncRecordWithPrimaryExemplar(
       ? rawRecord.unidade_monetaria.trim()
       : undefined;
 
-  return {
+  const baseRecord: NumismaticRecord = {
     id:
       typeof rawRecord.id === "string" && rawRecord.id.trim()
         ? rawRecord.id.trim()
@@ -211,6 +531,9 @@ function syncRecordWithPrimaryExemplar(
     reverso_image: primary?.reverso_image ?? rawRecord.reverso_image,
     exemplares,
   };
+
+  baseRecord.friendly_code = generateFriendlyCode(baseRecord);
+  return baseRecord;
 }
 
 function readLocalRecords(): NumismaticRecord[] {
@@ -889,6 +1212,78 @@ export const numismaticRepository: CollectionRepository = {
     items[index] = updated;
     writeLocalRecords(items);
     return updated;
+  },
+
+  async mergeRecords(
+    sourceRecordId: string,
+    targetRecordId: string,
+    onlyExemplarId?: string
+  ): Promise<NumismaticRecord | null> {
+    if (sourceRecordId === targetRecordId) return null;
+    const items = readLocalRecords();
+    const sourceIndex = items.findIndex((item) => item.id === sourceRecordId);
+    const targetIndex = items.findIndex((item) => item.id === targetRecordId);
+    if (sourceIndex === -1 || targetIndex === -1) return null;
+
+    const source = items[sourceIndex];
+    const target = items[targetIndex];
+
+    const exemplarsToMove = onlyExemplarId
+      ? source.exemplares.filter((ex) => ex.id === onlyExemplarId)
+      : source.exemplares;
+
+    if (exemplarsToMove.length === 0) return null;
+
+    const existingTargetExIds = new Set(
+      (target.exemplares || []).map((ex) => ex.id)
+    );
+
+    const preparedExemplars: NumismaticExemplar[] = exemplarsToMove.map(
+      (ex) => {
+        const sanitized = sanitizeExemplar(ex, source);
+        const finalId = existingTargetExIds.has(sanitized.id)
+          ? generateId("ex")
+          : sanitized.id;
+        existingTargetExIds.add(finalId);
+        return { ...sanitized, id: finalId };
+      }
+    );
+
+    const mergedVariants = Array.from(
+      new Set([
+        ...(target.alertas_variantes_raras || []),
+        ...(source.alertas_variantes_raras || []),
+      ])
+    );
+
+    const updatedTarget = syncRecordWithPrimaryExemplar({
+      ...target,
+      updated_at: new Date().toISOString(),
+      alertas_variantes_raras: mergedVariants,
+      anverso_image: target.anverso_image || source.anverso_image,
+      reverso_image: target.reverso_image || source.reverso_image,
+      exemplares: [...target.exemplares, ...preparedExemplars],
+    });
+
+    items[targetIndex] = updatedTarget;
+
+    const remainingSourceExemplars = onlyExemplarId
+      ? source.exemplares.filter((ex) => ex.id !== onlyExemplarId)
+      : [];
+
+    if (remainingSourceExemplars.length === 0) {
+      const filtered = items.filter((item) => item.id !== sourceRecordId);
+      writeLocalRecords(filtered);
+    } else {
+      items[sourceIndex] = syncRecordWithPrimaryExemplar({
+        ...source,
+        updated_at: new Date().toISOString(),
+        exemplares: remainingSourceExemplars,
+      });
+      writeLocalRecords(items);
+    }
+
+    return updatedTarget;
   },
 
   async remove(id: string): Promise<void> {
