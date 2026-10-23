@@ -65,6 +65,8 @@ export interface NumismaticExemplar {
   reverso_rotation?: number;
   /** Indica se as imagens deste exemplar já foram padronizadas (corte 1:1 600x600 centralizado + orientação em pé) */
   image_standardized?: boolean;
+  /** Indica se o exemplar recebeu ajuste/corte manual pelo usuário */
+  manual_crop?: boolean;
 }
 
 /**

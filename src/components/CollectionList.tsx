@@ -22,13 +22,11 @@ import {
 } from "lucide-react";
 import { NumismaticRecord } from "@/types/numismatics";
 import {
-  autoBackfillCatalogIds,
-  autoOptimizeDatabaseImages,
   autoStandardizeDatabaseImages,
-  deduplicateLocalCollection,
   formatStandardCoinTitle,
   generateFriendlyCode,
   getPrimaryFacePreference,
+  getUnstandardizedExemplarsCount,
   importCollectionData,
   parseAndValidateBackupJson,
   PrimaryFacePreference,
@@ -142,27 +140,18 @@ export function CollectionList({
   const [importFeedback, setImportFeedback] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
 
+  // Restaura a posição de rolagem (scroll) salva ao retornar para a aba do acervo (underbed)
   useEffect(() => {
-    deduplicateLocalCollection();
-    if (onRecordsOptimized) {
-      onRecordsOptimized();
+    if (typeof window === "undefined") return;
+    const saved = window.sessionStorage.getItem("underbed:scroll_position");
+    if (saved !== null) {
+      const savedPosition = Number(saved);
+      if (Number.isFinite(savedPosition) && savedPosition >= 0) {
+        requestAnimationFrame(() => {
+          window.scrollTo(0, savedPosition);
+        });
+      }
     }
-
-    autoOptimizeDatabaseImages().then(() => {
-      console.log("Otimização automática do banco local concluída");
-      if (onRecordsOptimized) {
-        onRecordsOptimized();
-      }
-    });
-
-    autoBackfillCatalogIds().then((updated) => {
-      if (updated) {
-        deduplicateLocalCollection();
-        if (onRecordsOptimized) {
-          onRecordsOptimized();
-        }
-      }
-    });
   }, []);
 
   // Extrai dinamicamente todas as Unidades Monetárias (UM) cadastradas no acervo
@@ -367,16 +356,18 @@ export function CollectionList({
         );
       }
 
-      // Aciona a padronização visual retroativa após qualquer importação de backup JSON
-      autoStandardizeDatabaseImages(undefined, () => {
-        if (onRecordsOptimized) {
-          onRecordsOptimized();
-        }
-      }).then(() => {
-        if (onRecordsOptimized) {
-          onRecordsOptimized();
-        }
-      });
+      // Aciona a padronização visual retroativa após importação apenas se houver exemplares sem image_standardized
+      if (getUnstandardizedExemplarsCount() > 0) {
+        autoStandardizeDatabaseImages(undefined, () => {
+          if (onRecordsOptimized) {
+            onRecordsOptimized();
+          }
+        }).then(() => {
+          if (onRecordsOptimized) {
+            onRecordsOptimized();
+          }
+        });
+      }
     } catch (err) {
       setImportError(
         err instanceof Error
@@ -721,7 +712,15 @@ export function CollectionList({
               <button
                 key={item.id}
                 type="button"
-                onClick={() => onSelectRecord(item)}
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.sessionStorage.setItem(
+                      "underbed:scroll_position",
+                      String(window.scrollY)
+                    );
+                  }
+                  onSelectRecord(item);
+                }}
                 className="group flex w-full items-center gap-3.5 rounded-2xl border border-slate-800 bg-slate-900/90 p-3.5 text-left transition hover:border-amber-500/40 hover:bg-slate-900"
               >
                 {/* Miniatura */}

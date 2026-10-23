@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { Camera, Library, Coins, Sparkles, Loader2 } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Camera, Library, Coins, Loader2 } from "lucide-react";
 import {
   NumismaticClassification,
   NumismaticExemplar,
@@ -12,6 +12,7 @@ import {
   autoOptimizeDatabaseImages,
   autoStandardizeDatabaseImages,
   deduplicateLocalCollection,
+  getUnstandardizedExemplarsCount,
   numismaticRepository,
 } from "@/lib/storage";
 import { ProcessedImage } from "@/lib/image-utils";
@@ -22,7 +23,8 @@ import {
 import { TechnicalSheet } from "@/components/TechnicalSheet";
 import { CollectionList } from "@/components/CollectionList";
 
-type ActiveTab = "scanner" | "acervo" | "ficha";
+type ActiveTab = "scanner" | "underbed";
+const SCROLL_STORAGE_KEY = "underbed:scroll_position";
 
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("scanner");
@@ -40,16 +42,29 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
-  const loadRecords = async () => {
+  const savedScrollYRef = useRef<number>(0);
+  const initialStandardizationTriggeredRef = useRef<boolean>(false);
+
+  const loadRecords = async (): Promise<NumismaticRecord[]> => {
     deduplicateLocalCollection();
     const list = await numismaticRepository.list();
     setRecords(list);
     setSelectedRecord((prev) =>
       prev ? list.find((item) => item.id === prev.id) ?? null : null
     );
+    return list;
   };
 
-  const triggerRetroactiveStandardization = () => {
+  const triggerRetroactiveStandardization = (
+    recordsToCheck?: NumismaticRecord[]
+  ) => {
+    // Trava a execução para rodar apenas se o array filtrado por !image_standardized for maior que zero
+    const pendingCount = getUnstandardizedExemplarsCount(recordsToCheck);
+    if (pendingCount <= 0) {
+      setStandardizeProgress(null);
+      return;
+    }
+
     autoStandardizeDatabaseImages(
       (current, total) => {
         setStandardizeProgress({ current, total });
@@ -69,22 +84,40 @@ export default function HomePage() {
   };
 
   useEffect(() => {
-    loadRecords();
-    autoOptimizeDatabaseImages().then(() => {
-      console.log("Otimização automática do banco local concluída");
-      loadRecords();
-      triggerRetroactiveStandardization();
-    });
-    autoBackfillCatalogIds().then((updated) => {
-      if (updated) {
-        deduplicateLocalCollection();
-        loadRecords();
+    let isMounted = true;
+    (async () => {
+      await autoOptimizeDatabaseImages();
+      const currentList = await loadRecords();
+
+      if (isMounted && !initialStandardizationTriggeredRef.current) {
+        initialStandardizationTriggeredRef.current = true;
+        const unstandardizedItems = currentList
+          .flatMap((r) => r.exemplares || [])
+          .filter(
+            (ex) =>
+              !ex.image_standardized &&
+              Boolean(ex.anverso_image || ex.reverso_image)
+          );
+
+        if (unstandardizedItems.length > 0) {
+          triggerRetroactiveStandardization(currentList);
+        }
       }
-    });
+
+      const updatedCatalog = await autoBackfillCatalogIds();
+      if (updatedCatalog && isMounted) {
+        deduplicateLocalCollection();
+        await loadRecords();
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // Impede que o botão de voltar físico/navegador saia do PWA para uma página externa,
-  // redirecionando sempre para a tela principal do acervo por estado interno.
+  // redirecionando sempre para a tela principal do acervo (underbed) por estado interno.
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.history.replaceState({ underbedView: activeTab }, "");
@@ -94,19 +127,55 @@ export default function HomePage() {
     if (typeof window === "undefined") return;
 
     const handlePopState = () => {
-      setActiveTab("acervo");
-      window.history.pushState({ underbedView: "acervo" }, "");
+      setSelectedRecord(null);
+      setSelectedExemplarId(null);
+      setActiveTab("underbed");
+      window.history.pushState({ underbedView: "underbed" }, "");
     };
 
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
+  // Preserva e restaura a rolagem ao retornar para a lista de registros na aba underbed
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (activeTab === "underbed" && !selectedRecord) {
+      const stored = window.sessionStorage.getItem(SCROLL_STORAGE_KEY);
+      const savedPosition =
+        stored !== null ? Number(stored) : savedScrollYRef.current;
+      if (Number.isFinite(savedPosition) && savedPosition >= 0) {
+        requestAnimationFrame(() => {
+          window.scrollTo(0, savedPosition);
+        });
+      }
+    }
+  }, [activeTab, selectedRecord]);
+
   const navigateToTab = (tab: ActiveTab) => {
+    if (
+      typeof window !== "undefined" &&
+      activeTab === "underbed" &&
+      !selectedRecord &&
+      tab !== "underbed"
+    ) {
+      savedScrollYRef.current = window.scrollY;
+      window.sessionStorage.setItem(SCROLL_STORAGE_KEY, String(window.scrollY));
+    }
+    if (tab === "underbed") {
+      setSelectedRecord(null);
+      setSelectedExemplarId(null);
+    }
     setActiveTab(tab);
     if (typeof window !== "undefined") {
       window.history.pushState({ underbedView: tab }, "");
     }
+  };
+
+  const handleCloseTechnicalSheet = () => {
+    setSelectedRecord(null);
+    setSelectedExemplarId(null);
+    setActiveTab("underbed");
   };
 
   const totalExemplares = records.reduce(
@@ -177,7 +246,10 @@ export default function HomePage() {
         `Moeda já existente no catálogo UnderBed! Um novo exemplar físico foi adicionado à ficha de "${record.nome}".`
       );
     }
-    navigateToTab("ficha");
+    setActiveTab("underbed");
+    if (typeof window !== "undefined") {
+      window.history.pushState({ underbedView: "underbed", ficha: true }, "");
+    }
   };
 
   const handleUpdateExemplar = async (
@@ -192,6 +264,7 @@ export default function HomePage() {
         | "anverso_rotation"
         | "reverso_rotation"
         | "image_standardized"
+        | "manual_crop"
         | "estado_conservacao"
         | "valor_mercado_min_brl"
         | "valor_mercado_max_brl"
@@ -280,7 +353,7 @@ export default function HomePage() {
     } else {
       setSelectedRecord(null);
       setSelectedExemplarId(null);
-      setActiveTab("acervo");
+      setActiveTab("underbed");
     }
   };
 
@@ -290,7 +363,7 @@ export default function HomePage() {
     setRecords(updatedList);
     setSelectedRecord(null);
     setSelectedExemplarId(null);
-    setActiveTab("acervo");
+    setActiveTab("underbed");
   };
 
   const handleMergeWithRecord = async (
@@ -352,7 +425,7 @@ export default function HomePage() {
 
         <button
           type="button"
-          onClick={() => navigateToTab("acervo")}
+          onClick={() => navigateToTab("underbed")}
           className="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-amber-500/40"
         >
           <Library className="h-3.5 w-3.5 text-amber-400" />
@@ -407,40 +480,51 @@ export default function HomePage() {
           />
         )}
 
-        {activeTab === "acervo" && (
-          <CollectionList
-            records={records}
-            onSelectRecord={(rec) => {
-              setSelectedRecord(rec);
-              setSelectedExemplarId(rec.exemplares?.[0]?.id || null);
-              setStatusBanner(null);
-              navigateToTab("ficha");
-            }}
-            onExportJson={handleExportJson}
-            onRecordsOptimized={() => {
-              loadRecords();
-              triggerRetroactiveStandardization();
-            }}
-          />
-        )}
-
-        {activeTab === "ficha" && selectedRecord && (
-          <TechnicalSheet
-            record={selectedRecord}
-            otherRecords={records}
-            initialExemplarId={selectedExemplarId}
-            onUpdateExemplar={handleUpdateExemplar}
-            onUpdateRecord={handleUpdateRecord}
-            onAddExemplar={handleAddExemplar}
-            onDeleteExemplar={handleDeleteExemplar}
-            onMergeWithRecord={handleMergeWithRecord}
-            onDeleteRecord={handleDeleteRecord}
-            onBack={() => navigateToTab("acervo")}
-          />
-        )}
+        {activeTab === "underbed" &&
+          (selectedRecord ? (
+            <TechnicalSheet
+              record={selectedRecord}
+              otherRecords={records}
+              initialExemplarId={selectedExemplarId}
+              onUpdateExemplar={handleUpdateExemplar}
+              onUpdateRecord={handleUpdateRecord}
+              onAddExemplar={handleAddExemplar}
+              onDeleteExemplar={handleDeleteExemplar}
+              onMergeWithRecord={handleMergeWithRecord}
+              onDeleteRecord={handleDeleteRecord}
+              onBack={handleCloseTechnicalSheet}
+            />
+          ) : (
+            <CollectionList
+              records={records}
+              onSelectRecord={(rec) => {
+                if (typeof window !== "undefined") {
+                  savedScrollYRef.current = window.scrollY;
+                  window.sessionStorage.setItem(
+                    SCROLL_STORAGE_KEY,
+                    String(window.scrollY)
+                  );
+                  window.history.pushState(
+                    { underbedView: "underbed", ficha: true },
+                    ""
+                  );
+                }
+                setSelectedRecord(rec);
+                setSelectedExemplarId(rec.exemplares?.[0]?.id || null);
+                setStatusBanner(null);
+              }}
+              onExportJson={handleExportJson}
+              onRecordsOptimized={async () => {
+                const updatedList = await loadRecords();
+                if (getUnstandardizedExemplarsCount(updatedList) > 0) {
+                  triggerRetroactiveStandardization(updatedList);
+                }
+              }}
+            />
+          ))}
       </main>
 
-      {/* Barra de Navegação Inferior Mobile-First */}
+      {/* Barra de Navegação Inferior Mobile-First (apenas Classificar e Acervo) */}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-800/90 bg-slate-950/90 backdrop-blur-lg">
         <div className="mx-auto flex max-w-2xl items-center justify-around px-4 py-2">
           <button
@@ -458,31 +542,16 @@ export default function HomePage() {
 
           <button
             type="button"
-            onClick={() => navigateToTab("acervo")}
+            onClick={() => navigateToTab("underbed")}
             className={`flex flex-1 flex-col items-center gap-1 rounded-xl py-1.5 text-xs font-medium transition ${
-              activeTab === "acervo"
+              activeTab === "underbed"
                 ? "text-amber-400"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <Library className="h-5 w-5" />
-            <span>UnderBed ({totalExemplares})</span>
+            <span>Acervo</span>
           </button>
-
-          {selectedRecord && (
-            <button
-              type="button"
-              onClick={() => navigateToTab("ficha")}
-              className={`flex flex-1 flex-col items-center gap-1 rounded-xl py-1.5 text-xs font-medium transition ${
-                activeTab === "ficha"
-                  ? "text-amber-400"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              <Sparkles className="h-5 w-5" />
-              <span>Ficha Ativa</span>
-            </button>
-          )}
         </div>
       </nav>
     </div>

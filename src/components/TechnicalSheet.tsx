@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   Award,
   Scale,
@@ -31,6 +30,7 @@ import {
   Pencil,
   RotateCw,
   RotateCcw,
+  Crop,
 } from "lucide-react";
 import { NumismaticExemplar, NumismaticRecord } from "@/types/numismatics";
 import {
@@ -39,6 +39,7 @@ import {
   getExemplarDisplayLabels,
   rotateBase64Image,
 } from "@/lib/storage";
+import { CoinCropperModal } from "@/components/CoinCropperModal";
 
 interface TechnicalSheetProps {
   record: NumismaticRecord;
@@ -62,6 +63,7 @@ interface TechnicalSheetProps {
         | "anverso_rotation"
         | "reverso_rotation"
         | "image_standardized"
+        | "manual_crop"
       >
     > & {
       alertas_variantes_raras?: string[];
@@ -143,7 +145,6 @@ export function TechnicalSheet({
   onDeleteRecord,
   onBack,
 }: TechnicalSheetProps) {
-  const router = useRouter();
   const exemplares = record.exemplares || [];
   const cubCode = record.friendly_code || generateFriendlyCode(record);
   const standardTitle = formatStandardCoinTitle(record);
@@ -151,6 +152,13 @@ export function TechnicalSheet({
     () => getExemplarDisplayLabels(exemplares),
     [exemplares]
   );
+
+  // Sempre inicia a leitura pelo topo ao montar a Ficha Ativa (ou trocar de registro)
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+  }, [record.id]);
 
   // Isola o índice ativo (selectedExemplarIndex) no estado local da ficha técnica,
   // reinicializando apenas quando `record.id` muda.
@@ -212,6 +220,11 @@ export function TechnicalSheet({
   const [mergeOnlyCurrentExemplar, setMergeOnlyCurrentExemplar] =
     useState(false);
   const [isMerging, setIsMerging] = useState(false);
+
+  // Estado do Modal de Ajuste/Corte Manual (CoinCropperModal)
+  const [cropModalSide, setCropModalSide] = useState<
+    "anverso" | "reverso" | null
+  >(null);
 
   // Estado do Modal de Edição Manual da Moeda
   const [showEditRecordModal, setShowEditRecordModal] = useState(false);
@@ -463,9 +476,28 @@ export function TechnicalSheet({
   const handleBackToCollection = () => {
     if (onBack) {
       onBack();
-    } else {
-      router.push("/");
     }
+  };
+
+  const handleSaveManualCrop = async (croppedBase64: string) => {
+    if (!cropModalSide) return;
+    await onUpdateExemplar(
+      record.id,
+      currentExemplar.id,
+      cropModalSide === "anverso"
+        ? {
+            anverso_image: croppedBase64,
+            anverso_rotation: 0,
+            image_standardized: true,
+            manual_crop: true,
+          }
+        : {
+            reverso_image: croppedBase64,
+            reverso_rotation: 0,
+            image_standardized: true,
+            manual_crop: true,
+          }
+    );
   };
 
   const filteredMergeCandidates = useMemo(() => {
@@ -556,6 +588,23 @@ export function TechnicalSheet({
           )}
         </div>
       </div>
+
+      {/* Modal de Ajuste e Corte Manual 1:1 (600x600) */}
+      <CoinCropperModal
+        isOpen={cropModalSide !== null}
+        imageSrc={
+          cropModalSide === "reverso"
+            ? currentExemplar.reverso_image || record.reverso_image || ""
+            : currentExemplar.anverso_image || record.anverso_image || ""
+        }
+        sideLabel={
+          cropModalSide === "reverso"
+            ? `Reverso (${currentExemplarLabel})`
+            : `Anverso (${currentExemplarLabel})`
+        }
+        onClose={() => setCropModalSide(null)}
+        onSaveCrop={handleSaveManualCrop}
+      />
 
       {/* Modal de Edição Manual de Informações da Moeda */}
       {showEditRecordModal && (
@@ -1031,8 +1080,17 @@ export function TechnicalSheet({
           <div className="mt-4 grid grid-cols-2 gap-3">
             {(currentExemplar.anverso_image || record.anverso_image) && (
               <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-2 text-center">
-                {/* Botões de Rotação Rápida 90° (Anverso) */}
+                {/* Botões de Crop/Ajustar e Rotação Rápida 90° (Anverso) */}
                 <div className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-xl border border-slate-700/80 bg-slate-900/90 p-1 shadow backdrop-blur-sm">
+                  <button
+                    type="button"
+                    onClick={() => setCropModalSide("anverso")}
+                    title="Recortar e ajustar Anverso manualmente"
+                    className="inline-flex items-center gap-1 rounded-lg bg-amber-500/15 px-2 py-1 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-500/30"
+                  >
+                    <Crop className="h-3 w-3" />
+                    <span>Crop/Ajustar</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleRotateImage("anverso", -90)}
@@ -1072,8 +1130,17 @@ export function TechnicalSheet({
             )}
             {(currentExemplar.reverso_image || record.reverso_image) && (
               <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-2 text-center">
-                {/* Botões de Rotação Rápida 90° (Reverso) */}
+                {/* Botões de Crop/Ajustar e Rotação Rápida 90° (Reverso) */}
                 <div className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-xl border border-slate-700/80 bg-slate-900/90 p-1 shadow backdrop-blur-sm">
+                  <button
+                    type="button"
+                    onClick={() => setCropModalSide("reverso")}
+                    title="Recortar e ajustar Reverso manualmente"
+                    className="inline-flex items-center gap-1 rounded-lg bg-amber-500/15 px-2 py-1 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-500/30"
+                  >
+                    <Crop className="h-3 w-3" />
+                    <span>Crop/Ajustar</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleRotateImage("reverso", -90)}

@@ -81,6 +81,7 @@ export interface CollectionRepository {
         | "anverso_rotation"
         | "reverso_rotation"
         | "image_standardized"
+        | "manual_crop"
       >
     > & {
       alertas_variantes_raras?: string[];
@@ -613,6 +614,7 @@ function sanitizeExemplar(
       : fallbackRecord?.image_standardized !== undefined
         ? { image_standardized: Boolean(fallbackRecord.image_standardized) }
         : {}),
+    ...(rawEx?.manual_crop ? { manual_crop: true } : {}),
   };
 }
 
@@ -747,7 +749,9 @@ export async function autoOptimizeDatabaseImages(): Promise<boolean> {
   if (typeof window === "undefined") return false;
 
   const migrationState = window.localStorage.getItem(CROP_MIGRATION_KEY);
-  const forceAllImages = migrationState !== "done";
+  if (migrationState === "done") {
+    return false;
+  }
 
   const records = readLocalRecords();
   if (records.length === 0) {
@@ -755,26 +759,24 @@ export async function autoOptimizeDatabaseImages(): Promise<boolean> {
     return false;
   }
 
-  const shouldProcessImage = (img?: string): img is string => {
+  const shouldProcessImage = (
+    img?: string,
+    alreadyStandardized?: boolean
+  ): img is string => {
+    if (alreadyStandardized) return false;
     if (!img || typeof img !== "string" || !img.startsWith("data:image/")) {
       return false;
     }
-    if (forceAllImages) {
-      return true;
-    }
-    return (
-      img.startsWith("data:image/jpeg") ||
-      img.startsWith("data:image/jpg") ||
-      img.startsWith("data:image/png")
-    );
+    return true;
   };
 
   let anyModified = false;
 
   for (const record of records) {
+    if (record.image_standardized) continue;
     let recordChanged = false;
 
-    if (shouldProcessImage(record.anverso_image)) {
+    if (shouldProcessImage(record.anverso_image, record.image_standardized)) {
       try {
         const blob = base64ToBlob(record.anverso_image);
         record.anverso_image = await autoCropAndCompressCoin(blob);
@@ -784,7 +786,7 @@ export async function autoOptimizeDatabaseImages(): Promise<boolean> {
       }
     }
 
-    if (shouldProcessImage(record.reverso_image)) {
+    if (shouldProcessImage(record.reverso_image, record.image_standardized)) {
       try {
         const blob = base64ToBlob(record.reverso_image);
         record.reverso_image = await autoCropAndCompressCoin(blob);
@@ -796,7 +798,14 @@ export async function autoOptimizeDatabaseImages(): Promise<boolean> {
 
     if (Array.isArray(record.exemplares)) {
       for (const exemplar of record.exemplares) {
-        if (shouldProcessImage(exemplar.anverso_image)) {
+        if (exemplar.image_standardized) continue;
+
+        if (
+          shouldProcessImage(
+            exemplar.anverso_image,
+            exemplar.image_standardized
+          )
+        ) {
           try {
             const blob = base64ToBlob(exemplar.anverso_image);
             exemplar.anverso_image = await autoCropAndCompressCoin(blob);
@@ -806,7 +815,12 @@ export async function autoOptimizeDatabaseImages(): Promise<boolean> {
           }
         }
 
-        if (shouldProcessImage(exemplar.reverso_image)) {
+        if (
+          shouldProcessImage(
+            exemplar.reverso_image,
+            exemplar.image_standardized
+          )
+        ) {
           try {
             const blob = base64ToBlob(exemplar.reverso_image);
             exemplar.reverso_image = await autoCropAndCompressCoin(blob);
@@ -833,6 +847,33 @@ export async function autoOptimizeDatabaseImages(): Promise<boolean> {
   return anyModified;
 }
 
+/**
+ * Retorna a quantidade de exemplares no banco local que ainda não possuem `image_standardized: true`.
+ */
+export function getUnstandardizedExemplarsCount(
+  recordsInput?: NumismaticRecord[]
+): number {
+  if (typeof window === "undefined") return 0;
+  const list = recordsInput ?? readLocalRecords();
+  let count = 0;
+  for (const rec of list) {
+    for (const ex of rec.exemplares || []) {
+      if (!ex.image_standardized) {
+        const hasAnverso =
+          typeof ex.anverso_image === "string" &&
+          ex.anverso_image.trim().length > 0;
+        const hasReverso =
+          typeof ex.reverso_image === "string" &&
+          ex.reverso_image.trim().length > 0;
+        if (hasAnverso || hasReverso) {
+          count++;
+        }
+      }
+    }
+  }
+  return count;
+}
+
 type StandardizationListener = {
   onProgress?: (current: number, total: number) => void;
   onItemUpdated?: () => void;
@@ -845,7 +886,8 @@ const standardizationListeners = new Set<StandardizationListener>();
  * Varredura retroativa sequencial em toda a base de dados local:
  * Filtra todos os exemplares sem `image_standardized: true`, envia `anverso_image` e `reverso_image`
  * para `/api/standardize-image`, aplica `cropCenterAndRotateCoin` (600x600 1:1 em pé),
- * zera `anverso_rotation`/`reverso_rotation`, marca `image_standardized = true` e salva a cada exemplar.
+ * zera `anverso_rotation`/`reverso_rotation`, marca `image_standardized = true` e salva no banco local
+ * antes do loop continuar para a próxima peça.
  */
 export async function autoStandardizeDatabaseImages(
   onProgress?: (current: number, total: number) => void,
@@ -920,6 +962,15 @@ export async function autoStandardizeDatabaseImages(
           continue;
         }
 
+        let newAnverso = targetEx.anverso_image;
+        let newReverso = targetEx.reverso_image;
+        let boxes: StandardizeImageResponse = {
+          anverso_box: [40, 40, 960, 960],
+          anverso_rotation: 0,
+          reverso_box: [40, 40, 960, 960],
+          reverso_rotation: 0,
+        };
+
         try {
           const response = await fetch("/api/standardize-image", {
             method: "POST",
@@ -930,87 +981,102 @@ export async function autoStandardizeDatabaseImages(
             }),
           });
 
-          if (!response.ok) {
+          if (response.ok) {
+            boxes = (await response.json()) as StandardizeImageResponse;
+          } else {
             console.warn(
-              `[autoStandardizeDatabaseImages] Falha na API (${response.status}) para exemplar ${exemplarId}`
+              `[autoStandardizeDatabaseImages] API retornou ${response.status} para exemplar ${exemplarId}; aplicando enquadramento padrão 1:1.`
             );
-            continue;
           }
+        } catch (apiErr) {
+          console.warn(
+            `[autoStandardizeDatabaseImages] Erro de rede para exemplar ${exemplarId}; aplicando enquadramento padrão 1:1:`,
+            apiErr
+          );
+        }
 
-          const boxes = (await response.json()) as StandardizeImageResponse;
-
-          let newAnverso = targetEx.anverso_image;
-          let newReverso = targetEx.reverso_image;
-
-          if (targetEx.anverso_image) {
+        if (targetEx.anverso_image) {
+          try {
             newAnverso = await cropCenterAndRotateCoin(
               targetEx.anverso_image,
               boxes.anverso_box,
               boxes.anverso_rotation
             );
+          } catch (cropErr) {
+            console.warn(
+              `[autoStandardizeDatabaseImages] Erro no corte do anverso (${exemplarId}):`,
+              cropErr
+            );
           }
+        }
 
-          if (targetEx.reverso_image) {
+        if (targetEx.reverso_image) {
+          try {
             newReverso = await cropCenterAndRotateCoin(
               targetEx.reverso_image,
               boxes.reverso_box,
               boxes.reverso_rotation
             );
-          }
-
-          // Re-lê registros locais para não sobrescrever edições concorrentes do usuário
-          const latestRecords = readLocalRecords();
-          const recIdx = latestRecords.findIndex((r) => r.id === recordId);
-          if (recIdx !== -1) {
-            const rec = latestRecords[recIdx];
-            const updatedExemplares = (rec.exemplares || []).map((ex) =>
-              ex.id === exemplarId
-                ? {
-                    ...ex,
-                    anverso_image: newAnverso,
-                    reverso_image: newReverso,
-                    anverso_rotation: 0,
-                    reverso_rotation: 0,
-                    image_standardized: true,
-                    updated_at: new Date().toISOString(),
-                  }
-                : ex
+          } catch (cropErr) {
+            console.warn(
+              `[autoStandardizeDatabaseImages] Erro no corte do reverso (${exemplarId}):`,
+              cropErr
             );
-
-            // syncRecordWithPrimaryExemplar atualiza automaticamente as fotos do card principal se for o Exemplar #1
-            latestRecords[recIdx] = syncRecordWithPrimaryExemplar({
-              ...rec,
-              anverso_image:
-                rec.exemplares?.[0]?.id === exemplarId
-                  ? newAnverso
-                  : rec.anverso_image,
-              reverso_image:
-                rec.exemplares?.[0]?.id === exemplarId
-                  ? newReverso
-                  : rec.reverso_image,
-              anverso_rotation:
-                rec.exemplares?.[0]?.id === exemplarId
-                  ? 0
-                  : rec.anverso_rotation,
-              reverso_rotation:
-                rec.exemplares?.[0]?.id === exemplarId
-                  ? 0
-                  : rec.reverso_rotation,
-              exemplares: updatedExemplares,
-            });
-
-            writeLocalRecords(latestRecords);
-            anyUpdated = true;
-
-            standardizationListeners.forEach((l) => {
-              l.onItemUpdated?.();
-            });
           }
-        } catch (err) {
-          console.warn(
-            `[autoStandardizeDatabaseImages] Erro ao padronizar exemplar ${exemplarId}:`,
-            err
+        }
+
+        // Garante que image_standardized: true seja SEMPRE persistido no objeto e salvo no banco local
+        // antes do loop continuar para a próxima peça.
+        const latestRecords = readLocalRecords();
+        const recIdx = latestRecords.findIndex((r) => r.id === recordId);
+        if (recIdx !== -1) {
+          const rec = latestRecords[recIdx];
+          const updatedExemplares = (rec.exemplares || []).map((ex) =>
+            ex.id === exemplarId
+              ? {
+                  ...ex,
+                  anverso_image: newAnverso,
+                  reverso_image: newReverso,
+                  anverso_rotation: 0,
+                  reverso_rotation: 0,
+                  image_standardized: true,
+                  updated_at: new Date().toISOString(),
+                }
+              : ex
           );
+
+          const allStandardized = updatedExemplares.every((ex) =>
+            Boolean(ex.image_standardized)
+          );
+
+          latestRecords[recIdx] = syncRecordWithPrimaryExemplar({
+            ...rec,
+            image_standardized: allStandardized,
+            anverso_image:
+              rec.exemplares?.[0]?.id === exemplarId
+                ? newAnverso
+                : rec.anverso_image,
+            reverso_image:
+              rec.exemplares?.[0]?.id === exemplarId
+                ? newReverso
+                : rec.reverso_image,
+            anverso_rotation:
+              rec.exemplares?.[0]?.id === exemplarId
+                ? 0
+                : rec.anverso_rotation,
+            reverso_rotation:
+              rec.exemplares?.[0]?.id === exemplarId
+                ? 0
+                : rec.reverso_rotation,
+            exemplares: updatedExemplares,
+          });
+
+          writeLocalRecords(latestRecords);
+          anyUpdated = true;
+
+          standardizationListeners.forEach((l) => {
+            l.onItemUpdated?.();
+          });
         }
       }
 
