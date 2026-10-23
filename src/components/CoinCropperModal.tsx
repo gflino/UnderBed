@@ -85,6 +85,7 @@ export function CoinCropperModal({
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const dragStartRef = useRef<{
     clientX: number;
@@ -97,9 +98,14 @@ export function CoinCropperModal({
   useEffect(() => {
     if (!isOpen || !imageSrc) return;
     setIsImageReady(false);
+    setSaveError(null);
+
+    const normalizedSrc = imageSrc.startsWith("data:image/")
+      ? imageSrc
+      : `data:image/jpeg;base64,${imageSrc}`;
 
     const img = new Image();
-    img.onload = () => {
+    const handleLoaded = () => {
       loadedImageRef.current = img;
       bgColorRef.current = computeAverageBorderFill(img);
       setZoom(1);
@@ -107,9 +113,11 @@ export function CoinCropperModal({
       setPan({ x: 0, y: 0 });
       setIsImageReady(true);
     };
-    img.src = imageSrc.startsWith("data:image/")
-      ? imageSrc
-      : `data:image/jpeg;base64,${imageSrc}`;
+    img.onload = handleLoaded;
+    img.src = normalizedSrc;
+    if (img.complete && img.naturalWidth > 0) {
+      handleLoaded();
+    }
   }, [isOpen, imageSrc]);
 
   // Renderiza a imagem transformada no contexto 2D especificado
@@ -239,22 +247,46 @@ export function CoinCropperModal({
   };
 
   const handleConfirmCrop = async () => {
-    const img = loadedImageRef.current;
-    if (!img) return;
+    if (!imageSrc) return;
     setIsSaving(true);
+    setSaveError(null);
     try {
+      let img = loadedImageRef.current;
+      if (!img || !img.complete || img.naturalWidth === 0) {
+        const normalizedSrc = imageSrc.startsWith("data:image/")
+          ? imageSrc
+          : `data:image/jpeg;base64,${imageSrc}`;
+        img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const tempImg = new Image();
+          tempImg.onload = () => resolve(tempImg);
+          tempImg.onerror = (e) => reject(e);
+          tempImg.src = normalizedSrc;
+        });
+        loadedImageRef.current = img;
+        bgColorRef.current = computeAverageBorderFill(img);
+      }
+
       const outputCanvas = document.createElement("canvas");
       outputCanvas.width = CANVAS_SIZE;
       outputCanvas.height = CANVAS_SIZE;
       const outCtx = outputCanvas.getContext("2d");
-      if (!outCtx) return;
+      if (!outCtx) {
+        throw new Error("Não foi possível criar o contexto 2D do Canvas.");
+      }
 
       // Renderiza a imagem final limpa 600x600 (sem as linhas guias da máscara)
       renderTransformedCoin(outCtx, img);
 
-      const finalBase64 = outputCanvas.toDataURL("image/jpeg", 0.88);
+      const finalBase64 = outputCanvas.toDataURL("image/jpeg", 0.8);
       await onSaveCrop(finalBase64);
       onClose();
+    } catch (err) {
+      console.error("Erro ao salvar ajuste de corte manual:", err);
+      setSaveError(
+        err instanceof Error
+          ? err.message
+          : "Não foi possível salvar o recorte manual."
+      );
     } finally {
       setIsSaving(false);
     }
@@ -425,6 +457,12 @@ export function CoinCropperModal({
           </div>
         </div>
 
+        {saveError && (
+          <div className="mt-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            {saveError}
+          </div>
+        )}
+
         {/* Rodapé de Ações */}
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-3">
           <button
@@ -449,11 +487,11 @@ export function CoinCropperModal({
             <button
               type="button"
               onClick={handleConfirmCrop}
-              disabled={isSaving || !isImageReady}
+              disabled={isSaving}
               className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 transition hover:bg-amber-400 disabled:opacity-50"
             >
               <Check className="h-3.5 w-3.5" />
-              Salvar Ajuste
+              {isSaving ? "Salvando..." : "Salvar Ajuste"}
             </button>
           </div>
         </div>

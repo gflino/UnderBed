@@ -733,7 +733,24 @@ function readLocalRecords(): NumismaticRecord[] {
 function writeLocalRecords(records: NumismaticRecord[]): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+    // Evita duplicar strings Base64 no topo do record quando já estão em exemplares[0],
+    // reduzindo pela metade o consumo do limite de 5MB do localStorage.
+    // readLocalRecords() hidrata automaticamente record.anverso_image / reverso_image via syncRecordWithPrimaryExemplar.
+    const compactRecords = records.map((rec) => {
+      if (Array.isArray(rec.exemplares) && rec.exemplares.length > 0) {
+        const primary = rec.exemplares[0];
+        const copy = { ...rec };
+        if (primary?.anverso_image && copy.anverso_image === primary.anverso_image) {
+          delete copy.anverso_image;
+        }
+        if (primary?.reverso_image && copy.reverso_image === primary.reverso_image) {
+          delete copy.reverso_image;
+        }
+        return copy;
+      }
+      return rec;
+    });
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(compactRecords));
   } catch (err) {
     console.error("Erro ao salvar acervo UnderBed no localStorage:", err);
     throw new Error(
@@ -1650,8 +1667,13 @@ export const numismaticRepository: CollectionRepository = {
 
     const { alertas_variantes_raras, ...exemplarPatch } = patch;
     const now = new Date().toISOString();
-    const updatedExemplares = items[index].exemplares.map((ex) =>
-      ex.id === exemplarId
+    const existingExemplares = items[index].exemplares || [];
+    const hasExactIdMatch = existingExemplares.some(
+      (ex) => ex.id === exemplarId
+    );
+
+    const updatedExemplares = existingExemplares.map((ex, idx) =>
+      (hasExactIdMatch ? ex.id === exemplarId : idx === 0)
         ? {
             ...ex,
             ...exemplarPatch,
@@ -1660,10 +1682,23 @@ export const numismaticRepository: CollectionRepository = {
         : ex
     );
 
+    const primaryEx = updatedExemplares[0];
     const updated = syncRecordWithPrimaryExemplar({
       ...items[index],
       ...(Array.isArray(alertas_variantes_raras)
         ? { alertas_variantes_raras }
+        : {}),
+      ...(primaryEx?.anverso_image !== undefined
+        ? { anverso_image: primaryEx.anverso_image }
+        : {}),
+      ...(primaryEx?.reverso_image !== undefined
+        ? { reverso_image: primaryEx.reverso_image }
+        : {}),
+      ...(primaryEx?.anverso_rotation !== undefined
+        ? { anverso_rotation: primaryEx.anverso_rotation }
+        : {}),
+      ...(primaryEx?.reverso_rotation !== undefined
+        ? { reverso_rotation: primaryEx.reverso_rotation }
         : {}),
       updated_at: now,
       exemplares: updatedExemplares,

@@ -25,6 +25,28 @@ import { CollectionList } from "@/components/CollectionList";
 
 type ActiveTab = "scanner" | "underbed";
 const SCROLL_STORAGE_KEY = "underbed:scroll_position";
+const ACTIVE_TAB_STORAGE_KEY = "underbed:active_tab";
+
+function pushSafeHistoryState(
+  extra: Record<string, unknown>,
+  replace = false
+): void {
+  if (typeof window === "undefined") return;
+  const currentState =
+    window.history.state && typeof window.history.state === "object"
+      ? window.history.state
+      : {};
+  const nextState = {
+    ...currentState,
+    __NA: true,
+    ...extra,
+  };
+  if (replace) {
+    window.history.replaceState(nextState, "");
+  } else {
+    window.history.pushState(nextState, "");
+  }
+}
 
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("scanner");
@@ -116,25 +138,38 @@ export default function HomePage() {
     };
   }, []);
 
-  // Impede que o botão de voltar físico/navegador saia do PWA para uma página externa,
+  // Impede que o botão de voltar físico/navegador saia do PWA ou recarregue a rota pelo Next.js,
   // redirecionando sempre para a tela principal do acervo (underbed) por estado interno.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.history.replaceState({ underbedView: activeTab }, "");
+    const savedTab = window.sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+    if (savedTab === "underbed") {
+      setActiveTab("underbed");
+    }
+    pushSafeHistoryState(
+      { underbedView: savedTab === "underbed" ? "underbed" : "scanner" },
+      true
+    );
+    // Empilha uma entrada extra mantendo __NA: true para interceptar o botão voltar sem acionar reload do Next.js
+    pushSafeHistoryState({
+      underbedView: savedTab === "underbed" ? "underbed" : "scanner",
+    });
   }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const handlePopState = () => {
+    const handlePopState = (event: PopStateEvent) => {
+      event.stopImmediatePropagation();
+      window.sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, "underbed");
       setSelectedRecord(null);
       setSelectedExemplarId(null);
       setActiveTab("underbed");
-      window.history.pushState({ underbedView: "underbed" }, "");
+      pushSafeHistoryState({ underbedView: "underbed", ficha: false });
     };
 
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
+    window.addEventListener("popstate", handlePopState, true);
+    return () => window.removeEventListener("popstate", handlePopState, true);
   }, []);
 
   // Preserva e restaura a rolagem ao retornar para a lista de registros na aba underbed
@@ -153,26 +188,28 @@ export default function HomePage() {
   }, [activeTab, selectedRecord]);
 
   const navigateToTab = (tab: ActiveTab) => {
-    if (
-      typeof window !== "undefined" &&
-      activeTab === "underbed" &&
-      !selectedRecord &&
-      tab !== "underbed"
-    ) {
-      savedScrollYRef.current = window.scrollY;
-      window.sessionStorage.setItem(SCROLL_STORAGE_KEY, String(window.scrollY));
+    if (typeof window !== "undefined") {
+      if (activeTab === "underbed" && !selectedRecord && tab !== "underbed") {
+        savedScrollYRef.current = window.scrollY;
+        window.sessionStorage.setItem(
+          SCROLL_STORAGE_KEY,
+          String(window.scrollY)
+        );
+      }
+      window.sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tab);
     }
     if (tab === "underbed") {
       setSelectedRecord(null);
       setSelectedExemplarId(null);
     }
     setActiveTab(tab);
-    if (typeof window !== "undefined") {
-      window.history.pushState({ underbedView: tab }, "");
-    }
+    pushSafeHistoryState({ underbedView: tab, ficha: false });
   };
 
   const handleCloseTechnicalSheet = () => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, "underbed");
+    }
     setSelectedRecord(null);
     setSelectedExemplarId(null);
     setActiveTab("underbed");
@@ -248,7 +285,8 @@ export default function HomePage() {
     }
     setActiveTab("underbed");
     if (typeof window !== "undefined") {
-      window.history.pushState({ underbedView: "underbed", ficha: true }, "");
+      window.sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, "underbed");
+      pushSafeHistoryState({ underbedView: "underbed", ficha: true });
     }
   };
 
@@ -504,10 +542,14 @@ export default function HomePage() {
                     SCROLL_STORAGE_KEY,
                     String(window.scrollY)
                   );
-                  window.history.pushState(
-                    { underbedView: "underbed", ficha: true },
-                    ""
+                  window.sessionStorage.setItem(
+                    ACTIVE_TAB_STORAGE_KEY,
+                    "underbed"
                   );
+                  pushSafeHistoryState({
+                    underbedView: "underbed",
+                    ficha: true,
+                  });
                 }
                 setSelectedRecord(rec);
                 setSelectedExemplarId(rec.exemplares?.[0]?.id || null);
