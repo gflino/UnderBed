@@ -19,6 +19,7 @@ import {
   ProcessedImage,
   autoCropAndCompressCoin,
   createProcessedImageFromWebp,
+  cropCenterAndRotateCoin,
 } from "@/lib/image-utils";
 import { NumismaticClassification } from "@/types/numismatics";
 
@@ -26,6 +27,7 @@ export interface PendingClassificationPreview {
   classification: NumismaticClassification;
   anversoImage?: ProcessedImage;
   reversoImage?: ProcessedImage;
+  alreadyStandardized?: boolean;
 }
 
 interface CoinCaptureProps {
@@ -174,10 +176,49 @@ export function CoinCapture({
               : 0
           : -1;
 
+      const rawAnverso = selectedImages[idxAnverso];
+      const rawReverso =
+        idxReverso >= 0 ? selectedImages[idxReverso] : undefined;
+
+      let standardizedAnverso = rawAnverso;
+      if (rawAnverso && result.anverso_box) {
+        try {
+          const croppedJpeg = await cropCenterAndRotateCoin(
+            rawAnverso.dataUrl,
+            result.anverso_box,
+            result.anverso_rotation ?? 0
+          );
+          standardizedAnverso = createProcessedImageFromWebp(croppedJpeg);
+        } catch (cropErr) {
+          console.warn(
+            "Falha ao padronizar anverso após classificação:",
+            cropErr
+          );
+        }
+      }
+
+      let standardizedReverso = rawReverso;
+      if (rawReverso && result.reverso_box) {
+        try {
+          const croppedJpeg = await cropCenterAndRotateCoin(
+            rawReverso.dataUrl,
+            result.reverso_box,
+            result.reverso_rotation ?? 0
+          );
+          standardizedReverso = createProcessedImageFromWebp(croppedJpeg);
+        } catch (cropErr) {
+          console.warn(
+            "Falha ao padronizar reverso após classificação:",
+            cropErr
+          );
+        }
+      }
+
       setPreviewState({
         classification: result,
-        anversoImage: selectedImages[idxAnverso],
-        reversoImage: idxReverso >= 0 ? selectedImages[idxReverso] : undefined,
+        anversoImage: standardizedAnverso,
+        reversoImage: standardizedReverso,
+        alreadyStandardized: true,
       });
     } catch (err) {
       setErrorMsg(

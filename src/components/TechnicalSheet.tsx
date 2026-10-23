@@ -28,9 +28,17 @@ import {
   GitMerge,
   Search,
   X,
+  Pencil,
+  RotateCw,
+  RotateCcw,
 } from "lucide-react";
 import { NumismaticExemplar, NumismaticRecord } from "@/types/numismatics";
-import { generateFriendlyCode } from "@/lib/storage";
+import {
+  formatStandardCoinTitle,
+  generateFriendlyCode,
+  getExemplarDisplayLabels,
+  rotateBase64Image,
+} from "@/lib/storage";
 
 interface TechnicalSheetProps {
   record: NumismaticRecord;
@@ -42,20 +50,51 @@ interface TechnicalSheetProps {
     patch: Partial<
       Pick<
         NumismaticExemplar,
+        | "gravura"
         | "estado_conservacao"
         | "valor_mercado_min_brl"
         | "valor_mercado_max_brl"
         | "local_armazenamento"
         | "observacoes"
         | "variantes_confirmadas"
+        | "anverso_image"
+        | "reverso_image"
+        | "anverso_rotation"
+        | "reverso_rotation"
+        | "image_standardized"
       >
     > & {
       alertas_variantes_raras?: string[];
     }
   ) => Promise<void>;
+  onUpdateRecord?: (
+    recordId: string,
+    patch: Partial<
+      Pick<
+        NumismaticRecord,
+        | "nome"
+        | "pais"
+        | "ano"
+        | "valor_face"
+        | "unidade_monetaria"
+        | "casa_moeda"
+        | "material"
+        | "peso_gramas"
+        | "diametro_mm"
+        | "bordo"
+        | "krause_id"
+        | "numista_id"
+        | "curiosidades"
+      >
+    > & {
+      gravura?: string;
+      exemplarId?: string;
+    }
+  ) => Promise<void>;
   onAddExemplar: (
     recordId: string,
     exemplarData: {
+      gravura?: string;
       estado_conservacao: string;
       valor_mercado_min_brl: number;
       valor_mercado_max_brl: number;
@@ -97,6 +136,7 @@ export function TechnicalSheet({
   otherRecords = [],
   initialExemplarId,
   onUpdateExemplar,
+  onUpdateRecord,
   onAddExemplar,
   onDeleteExemplar,
   onMergeWithRecord,
@@ -105,33 +145,98 @@ export function TechnicalSheet({
 }: TechnicalSheetProps) {
   const router = useRouter();
   const exemplares = record.exemplares || [];
-  const friendlyCode = record.friendly_code || generateFriendlyCode(record);
-  const [selectedExemplarId, setSelectedExemplarId] = useState<string>(
-    initialExemplarId || exemplares[0]?.id || ""
+  const cubCode = record.friendly_code || generateFriendlyCode(record);
+  const standardTitle = formatStandardCoinTitle(record);
+  const exemplarDisplayLabels = useMemo(
+    () => getExemplarDisplayLabels(exemplares),
+    [exemplares]
   );
+
+  // Isola o índice ativo (selectedExemplarIndex) no estado local da ficha técnica,
+  // reinicializando apenas quando `record.id` muda.
+  const [selectedExemplarIndex, setSelectedExemplarIndex] = useState<number>(
+    () => {
+      if (initialExemplarId) {
+        const foundIdx = exemplares.findIndex(
+          (ex) => ex.id === initialExemplarId
+        );
+        if (foundIdx >= 0) return foundIdx;
+      }
+      return 0;
+    }
+  );
+
+  useEffect(() => {
+    if (initialExemplarId) {
+      const foundIdx = (record.exemplares || []).findIndex(
+        (ex) => ex.id === initialExemplarId
+      );
+      setSelectedExemplarIndex(foundIdx >= 0 ? foundIdx : 0);
+    } else {
+      setSelectedExemplarIndex(0);
+    }
+  }, [record.id]);
+
+  // Garante que o índice ativo permaneça dentro dos limites se um exemplar for excluído
+  const currentExemplarIndex = Math.max(
+    0,
+    Math.min(selectedExemplarIndex, Math.max(0, exemplares.length - 1))
+  );
+
+  const currentExemplar: NumismaticExemplar = exemplares[
+    currentExemplarIndex
+  ] || {
+    id: "default",
+    created_at: record.created_at,
+    updated_at: record.updated_at,
+    gravura: undefined,
+    estado_conservacao: record.estado_conservacao,
+    valor_mercado_min_brl: record.valor_mercado_min_brl,
+    valor_mercado_max_brl: record.valor_mercado_max_brl,
+    alertas_conservacao: record.alertas_conservacao || [],
+    variantes_confirmadas: [],
+    observacoes: record.observacoes || "",
+    local_armazenamento: record.local_armazenamento || "",
+    anverso_image: record.anverso_image,
+    reverso_image: record.reverso_image,
+    anverso_rotation: record.anverso_rotation || 0,
+    reverso_rotation: record.reverso_rotation || 0,
+  };
+
+  const currentExemplarLabel =
+    exemplarDisplayLabels[currentExemplarIndex] ||
+    `Exemplar #${currentExemplarIndex + 1}`;
+
   const [showMergeModal, setShowMergeModal] = useState(false);
   const [mergeSearch, setMergeSearch] = useState("");
   const [mergeOnlyCurrentExemplar, setMergeOnlyCurrentExemplar] =
     useState(false);
   const [isMerging, setIsMerging] = useState(false);
 
-  const currentExemplar: NumismaticExemplar =
-    exemplares.find((ex) => ex.id === selectedExemplarId) ||
-    exemplares[0] || {
-      id: "default",
-      created_at: record.created_at,
-      updated_at: record.updated_at,
-      estado_conservacao: record.estado_conservacao,
-      valor_mercado_min_brl: record.valor_mercado_min_brl,
-      valor_mercado_max_brl: record.valor_mercado_max_brl,
-      alertas_conservacao: record.alertas_conservacao || [],
-      variantes_confirmadas: [],
-      observacoes: record.observacoes || "",
-      local_armazenamento: record.local_armazenamento || "",
-      anverso_image: record.anverso_image,
-      reverso_image: record.reverso_image,
-    };
+  // Estado do Modal de Edição Manual da Moeda
+  const [showEditRecordModal, setShowEditRecordModal] = useState(false);
+  const [editGravura, setEditGravura] = useState(currentExemplar.gravura || "");
+  const [editPais, setEditPais] = useState(record.pais || "");
+  const [editAno, setEditAno] = useState(record.ano || "");
+  const [editValorFace, setEditValorFace] = useState(record.valor_face || "");
+  const [editUM, setEditUM] = useState(record.unidade_monetaria || "");
+  const [editCasaMoeda, setEditCasaMoeda] = useState(record.casa_moeda || "");
+  const [editMaterial, setEditMaterial] = useState(record.material || "");
+  const [editPeso, setEditPeso] = useState<number>(record.peso_gramas || 0);
+  const [editDiametro, setEditDiametro] = useState<number>(
+    record.diametro_mm || 0
+  );
+  const [editBordo, setEditBordo] = useState(record.bordo || "");
+  const [editKrauseId, setEditKrauseId] = useState(record.krause_id || "");
+  const [editNumistaId, setEditNumistaId] = useState(record.numista_id || "");
+  const [editCuriosidades, setEditCuriosidades] = useState(
+    record.curiosidades || ""
+  );
+  const [isSavingRecordEdit, setIsSavingRecordEdit] = useState(false);
 
+  const [gravuraExemplar, setGravuraExemplar] = useState(
+    currentExemplar.gravura || ""
+  );
   const [estadoConservacao, setEstadoConservacao] = useState(
     currentExemplar.estado_conservacao || CONSERVACAO_OPTIONS[3]
   );
@@ -154,24 +259,16 @@ export function TechnicalSheet({
   const [savedFeedback, setSavedFeedback] = useState(false);
 
   const [showAddModal, setShowAddModal] = useState(false);
+  const [newGravura, setNewGravura] = useState(currentExemplar.gravura || "");
   const [newEstado, setNewEstado] = useState(
     record.estado_conservacao || CONSERVACAO_OPTIONS[3]
   );
   const [newLocal, setNewLocal] = useState("");
   const [newObs, setNewObs] = useState("");
 
+  // Sincroniza os campos individuais do exemplar selecionado quando o índice/ID ativo muda
   useEffect(() => {
-    if (
-      initialExemplarId &&
-      exemplares.some((ex) => ex.id === initialExemplarId)
-    ) {
-      setSelectedExemplarId(initialExemplarId);
-    } else if (!exemplares.some((ex) => ex.id === selectedExemplarId)) {
-      setSelectedExemplarId(exemplares[0]?.id || "");
-    }
-  }, [initialExemplarId, exemplares, selectedExemplarId]);
-
-  useEffect(() => {
+    setGravuraExemplar(currentExemplar.gravura || "");
     setEstadoConservacao(
       currentExemplar.estado_conservacao || CONSERVACAO_OPTIONS[3]
     );
@@ -180,7 +277,7 @@ export function TechnicalSheet({
     setObservacoes(currentExemplar.observacoes || "");
     setLocalArmazenamento(currentExemplar.local_armazenamento || "");
     setVariantesConfirmadas(currentExemplar.variantes_confirmadas || []);
-  }, [currentExemplar.id]);
+  }, [currentExemplarIndex, currentExemplar.id]);
 
   const availableGrades = useMemo(() => {
     const current = estadoConservacao?.trim();
@@ -241,6 +338,7 @@ export function TechnicalSheet({
 
   const handleSaveExemplar = async () => {
     await onUpdateExemplar(record.id, currentExemplar.id, {
+      gravura: gravuraExemplar.trim() || undefined,
       estado_conservacao: estadoConservacao,
       valor_mercado_min_brl: Number(valorMinBrl) || 0,
       valor_mercado_max_brl: Number(valorMaxBrl) || 0,
@@ -252,9 +350,100 @@ export function TechnicalSheet({
     setTimeout(() => setSavedFeedback(false), 2200);
   };
 
+  const handleRotateImage = async (
+    side: "anverso" | "reverso",
+    deltaDegrees: 90 | -90
+  ) => {
+    const sourceImg =
+      side === "anverso"
+        ? currentExemplar.anverso_image || record.anverso_image
+        : currentExemplar.reverso_image || record.reverso_image;
+
+    if (sourceImg) {
+      try {
+        const currentCssAngle =
+          side === "anverso"
+            ? currentExemplar.anverso_rotation || 0
+            : currentExemplar.reverso_rotation || 0;
+        const totalAngle =
+          (((currentCssAngle + deltaDegrees) % 360) + 360) % 360;
+        const rotatedBase64 = await rotateBase64Image(sourceImg, totalAngle);
+        await onUpdateExemplar(
+          record.id,
+          currentExemplar.id,
+          side === "anverso"
+            ? { anverso_image: rotatedBase64, anverso_rotation: 0 }
+            : { reverso_image: rotatedBase64, reverso_rotation: 0 }
+        );
+        return;
+      } catch (err) {
+        console.warn("Falha ao girar imagem no Canvas:", err);
+      }
+    }
+
+    const currentAngle =
+      side === "anverso"
+        ? currentExemplar.anverso_rotation || 0
+        : currentExemplar.reverso_rotation || 0;
+    const nextAngle = (((currentAngle + deltaDegrees) % 360) + 360) % 360;
+    await onUpdateExemplar(
+      record.id,
+      currentExemplar.id,
+      side === "anverso"
+        ? { anverso_rotation: nextAngle }
+        : { reverso_rotation: nextAngle }
+    );
+  };
+
+  const openEditRecordModal = () => {
+    setEditGravura(currentExemplar.gravura || "");
+    setEditPais(record.pais || "");
+    setEditAno(record.ano || "");
+    setEditValorFace(record.valor_face || "");
+    setEditUM(record.unidade_monetaria || "");
+    setEditCasaMoeda(record.casa_moeda || "");
+    setEditMaterial(record.material || "");
+    setEditPeso(record.peso_gramas || 0);
+    setEditDiametro(record.diametro_mm || 0);
+    setEditBordo(record.bordo || "");
+    setEditKrauseId(record.krause_id || "");
+    setEditNumistaId(record.numista_id || "");
+    setEditCuriosidades(record.curiosidades || "");
+    setShowEditRecordModal(true);
+  };
+
+  const handleSaveRecordEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onUpdateRecord) return;
+    setIsSavingRecordEdit(true);
+    try {
+      await onUpdateRecord(record.id, {
+        pais: editPais.trim(),
+        ano: editAno.trim(),
+        valor_face: editValorFace.trim(),
+        unidade_monetaria: editUM.trim() || undefined,
+        casa_moeda: editCasaMoeda.trim(),
+        material: editMaterial.trim(),
+        peso_gramas: Number(editPeso) || 0,
+        diametro_mm: Number(editDiametro) || 0,
+        bordo: editBordo.trim(),
+        krause_id: editKrauseId.trim() || undefined,
+        numista_id: editNumistaId.trim() || undefined,
+        curiosidades: editCuriosidades,
+        gravura: editGravura.trim(),
+        exemplarId: currentExemplar.id,
+      });
+      setGravuraExemplar(editGravura.trim());
+      setShowEditRecordModal(false);
+    } finally {
+      setIsSavingRecordEdit(false);
+    }
+  };
+
   const handleCreateRepeatedExemplar = async (e: React.FormEvent) => {
     e.preventDefault();
     const newId = await onAddExemplar(record.id, {
+      gravura: newGravura.trim() || currentExemplar.gravura,
       estado_conservacao: newEstado,
       valor_mercado_min_brl: record.valor_mercado_min_brl,
       valor_mercado_max_brl: record.valor_mercado_max_brl,
@@ -267,14 +456,9 @@ export function TechnicalSheet({
     setNewLocal("");
     setNewObs("");
     if (newId) {
-      setSelectedExemplarId(newId);
+      setSelectedExemplarIndex(exemplares.length);
     }
   };
-
-  const currentExemplarIndex = Math.max(
-    0,
-    exemplares.findIndex((ex) => ex.id === currentExemplar.id)
-  );
 
   const handleBackToCollection = () => {
     if (onBack) {
@@ -334,6 +518,17 @@ export function TechnicalSheet({
         </button>
 
         <div className="flex flex-wrap items-center gap-2">
+          {onUpdateRecord && (
+            <button
+              type="button"
+              onClick={openEditRecordModal}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-2 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/25"
+            >
+              <Pencil className="h-3.5 w-3.5 text-amber-400" />
+              Editar Informações
+            </button>
+          )}
+
           {onMergeWithRecord && otherRecords.some((r) => r.id !== record.id) && (
             <button
               type="button"
@@ -362,6 +557,244 @@ export function TechnicalSheet({
         </div>
       </div>
 
+      {/* Modal de Edição Manual de Informações da Moeda */}
+      {showEditRecordModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+          <form
+            onSubmit={handleSaveRecordEdit}
+            className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-3xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/20 px-2.5 py-0.5 text-[11px] font-semibold text-amber-300">
+                  <Pencil className="h-3 w-3" />
+                  Edição Manual de Informações
+                </span>
+                <h3 className="mt-1.5 text-base font-bold text-slate-100">
+                  {formatStandardCoinTitle({
+                    valor_face: editValorFace,
+                    unidade_monetaria: editUM,
+                    nome: record.nome,
+                  })}
+                </h3>
+                <p className="mt-0.5 text-xs text-slate-400">
+                  CUB recalculado automaticamente:{" "}
+                  <strong className="font-mono text-amber-300">
+                    {generateFriendlyCode({
+                      ...record,
+                      pais: editPais,
+                      ano: editAno,
+                      valor_face: editValorFace,
+                      unidade_monetaria: editUM,
+                      material: editMaterial,
+                      bordo: editBordo,
+                      krause_id: editKrauseId,
+                    })}
+                  </strong>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowEditRecordModal(false)}
+                disabled={isSavingRecordEdit}
+                className="rounded-xl p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    Valor Facial (ex: 50 Centavos, 50 Won)
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editValorFace}
+                    onChange={(e) => setEditValorFace(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    Unidade Monetária (UM) (ex: Cruzeiro, Réis)
+                  </label>
+                  <input
+                    type="text"
+                    value={editUM}
+                    onChange={(e) => setEditUM(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    País
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editPais}
+                    onChange={(e) => setEditPais(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    Ano
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editAno}
+                    onChange={(e) => setEditAno(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                  Gravura / Tema Artístico deste Exemplar ({currentExemplarLabel})
+                </label>
+                <input
+                  type="text"
+                  value={editGravura}
+                  onChange={(e) => setEditGravura(e.target.value)}
+                  placeholder="Ex: Plano Piloto de Brasília, Dom Pedro II..."
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    Casa da Moeda
+                  </label>
+                  <input
+                    type="text"
+                    value={editCasaMoeda}
+                    onChange={(e) => setEditCasaMoeda(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    Material / Composição
+                  </label>
+                  <input
+                    type="text"
+                    value={editMaterial}
+                    onChange={(e) => setEditMaterial(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    Peso Oficial (g)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editPeso}
+                    onChange={(e) => setEditPeso(Number(e.target.value))}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    Diâmetro / Largura (mm)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editDiametro}
+                    onChange={(e) => setEditDiametro(Number(e.target.value))}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    Bordo
+                  </label>
+                  <input
+                    type="text"
+                    value={editBordo}
+                    onChange={(e) => setEditBordo(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    Catálogo Krause / Pick (KM# / P#)
+                  </label>
+                  <input
+                    type="text"
+                    value={editKrauseId}
+                    onChange={(e) => setEditKrauseId(e.target.value)}
+                    placeholder="Ex: KM# 594"
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                    Numista ID (N#)
+                  </label>
+                  <input
+                    type="text"
+                    value={editNumistaId}
+                    onChange={(e) => setEditNumistaId(e.target.value)}
+                    placeholder="Ex: N# 4512"
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-slate-300">
+                  Curiosidades / Contexto Histórico
+                </label>
+                <textarea
+                  rows={3}
+                  value={editCuriosidades}
+                  onChange={(e) => setEditCuriosidades(e.target.value)}
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs leading-relaxed text-slate-100 focus:border-amber-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-800 pt-3">
+              <button
+                type="button"
+                onClick={() => setShowEditRecordModal(false)}
+                disabled={isSavingRecordEdit}
+                className="rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-2 text-xs font-semibold text-slate-300 transition hover:bg-slate-800"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingRecordEdit}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 transition hover:bg-amber-400 disabled:opacity-50"
+              >
+                <Save className="h-3.5 w-3.5" />
+                Salvar Informações
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* Modal de Fusão Manual de Cards / Mover Exemplar */}
       {showMergeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
@@ -375,7 +808,7 @@ export function TechnicalSheet({
                 <h3 className="mt-1.5 text-base font-bold text-slate-100">
                   Transferir de{" "}
                   <span className="font-mono text-amber-300">
-                    {friendlyCode}
+                    CUB {cubCode}
                   </span>
                 </h3>
                 <p className="mt-1 text-xs leading-relaxed text-slate-400">
@@ -405,9 +838,9 @@ export function TechnicalSheet({
                   className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-amber-500"
                 />
                 <label htmlFor="mergeOnlyCurrent" className="cursor-pointer">
-                  Mover apenas o{" "}
+                  Mover apenas{" "}
                   <strong className="text-amber-300">
-                    Exemplar #{currentExemplarIndex + 1}
+                    {currentExemplarLabel}
                   </strong>{" "}
                   (manter os outros {exemplares.length - 1} neste card)
                 </label>
@@ -420,7 +853,7 @@ export function TechnicalSheet({
                 type="search"
                 value={mergeSearch}
                 onChange={(e) => setMergeSearch(e.target.value)}
-                placeholder="Buscar card destino por código amigável, nome, país ou ano..."
+                placeholder="Buscar card destino por CUB, nome, país ou ano..."
                 className="w-full rounded-2xl border border-slate-800 bg-slate-950 py-2.5 pl-10 pr-4 text-xs text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
               />
             </div>
@@ -457,7 +890,7 @@ export function TechnicalSheet({
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="rounded border border-amber-400/40 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-amber-200">
-                            {candidateCode}
+                            CUB {candidateCode}
                           </span>
                           <span className="text-[11px] font-semibold text-amber-400">
                             {candidate.pais} • {candidate.ano}
@@ -468,7 +901,7 @@ export function TechnicalSheet({
                           </span>
                         </div>
                         <p className="mt-0.5 truncate text-xs font-bold text-slate-100">
-                          {candidate.nome}
+                          {formatStandardCoinTitle(candidate)}
                         </p>
                       </div>
                     </button>
@@ -491,11 +924,14 @@ export function TechnicalSheet({
 
       {/* Cabeçalho da Ficha Técnica de Referência */}
       <div className="relative overflow-hidden rounded-3xl border border-amber-500/30 bg-gradient-to-br from-slate-900 via-slate-900 to-amber-950/30 p-5 shadow-xl">
-        {/* Badges Superiores com Código Amigável Universal em evidência máxima, País, Unidade Monetária, Ano */}
+        {/* Badges Superiores com CUB (Código Universal de Base) em evidência máxima, País, Unidade Monetária, Ano */}
         <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/60 bg-amber-500/25 px-3.5 py-1 font-mono text-xs font-extrabold tracking-wide text-amber-100 shadow-sm">
+          <span
+            title="CUB — Código Universal de Base"
+            className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/60 bg-amber-500/25 px-3.5 py-1 font-mono text-xs font-extrabold tracking-wide text-amber-100 shadow-sm"
+          >
             <Tag className="h-3.5 w-3.5 text-amber-400" />
-            {friendlyCode}
+            CUB: {cubCode}
           </span>
           <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-500/15 px-3 py-1 text-xs font-semibold text-amber-300">
             <Globe2 className="h-3.5 w-3.5" />
@@ -518,13 +954,14 @@ export function TechnicalSheet({
           </span>
         </div>
 
+        {/* Título Padronizado Estrito: [Valor Facial] - [Unidade Monetária] */}
         <h1 className="mt-3 text-xl font-bold tracking-tight text-slate-50 sm:text-2xl">
-          {record.nome}
+          {standardTitle}
         </h1>
         <p className="mt-1 text-xs text-slate-400">
-          Valor de Face:{" "}
-          <strong className="text-slate-200">{record.valor_face}</strong> • Casa
-          da Moeda:{" "}
+          Gravura do Exemplar:{" "}
+          <strong className="text-amber-300">{currentExemplarLabel}</strong> •
+          Casa da Moeda:{" "}
           <strong className="text-slate-200">{record.casa_moeda}</strong>
         </p>
 
@@ -555,19 +992,21 @@ export function TechnicalSheet({
           <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-indigo-500/30 bg-slate-950/80 p-3">
             <div className="flex flex-wrap items-center gap-1.5">
               {exemplares.map((ex, idx) => {
-                const isSelected = ex.id === currentExemplar.id;
+                const isSelected = idx === currentExemplarIndex;
+                const label =
+                  exemplarDisplayLabels[idx] || `Exemplar #${idx + 1}`;
                 return (
                   <button
-                    key={ex.id}
+                    key={ex.id || idx}
                     type="button"
-                    onClick={() => setSelectedExemplarId(ex.id)}
+                    onClick={() => setSelectedExemplarIndex(idx)}
                     className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
                       isSelected
                         ? "bg-amber-500 text-slate-950 shadow"
                         : "border border-slate-800 bg-slate-900 text-slate-300 hover:border-amber-500/40"
                     }`}
                   >
-                    Exemplar #{idx + 1}
+                    {label}
                   </button>
                 );
               })}
@@ -584,33 +1023,91 @@ export function TechnicalSheet({
           </div>
         )}
 
-        {/* Fotografias de Anverso/Reverso do Exemplar Físico Selecionado */}
+        {/* Fotografias de Anverso/Reverso do Exemplar Físico Selecionado com Ferramenta de Rotação */}
         {(currentExemplar.anverso_image ||
           currentExemplar.reverso_image ||
           record.anverso_image ||
           record.reverso_image) && (
           <div className="mt-4 grid grid-cols-2 gap-3">
             {(currentExemplar.anverso_image || record.anverso_image) && (
-              <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-2 text-center">
-                <img
-                  src={currentExemplar.anverso_image || record.anverso_image}
-                  alt="Anverso"
-                  className="mx-auto h-32 w-full object-contain sm:h-40"
-                />
+              <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-2 text-center">
+                {/* Botões de Rotação Rápida 90° (Anverso) */}
+                <div className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-xl border border-slate-700/80 bg-slate-900/90 p-1 shadow backdrop-blur-sm">
+                  <button
+                    type="button"
+                    onClick={() => handleRotateImage("anverso", -90)}
+                    title="Girar Anverso 90° no sentido anti-horário"
+                    className="rounded-lg p-1 text-slate-300 transition hover:bg-amber-500/20 hover:text-amber-300"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRotateImage("anverso", 90)}
+                    title="Girar Anverso 90° no sentido horário"
+                    className="rounded-lg p-1 text-slate-300 transition hover:bg-amber-500/20 hover:text-amber-300"
+                  >
+                    <RotateCw className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                <div className="flex h-36 items-center justify-center overflow-hidden sm:h-44">
+                  <img
+                    src={currentExemplar.anverso_image || record.anverso_image}
+                    alt="Anverso"
+                    style={
+                      currentExemplar.anverso_rotation
+                        ? {
+                            transform: `rotate(${currentExemplar.anverso_rotation}deg)`,
+                          }
+                        : undefined
+                    }
+                    className="mx-auto max-h-32 max-w-full object-contain sm:max-h-40"
+                  />
+                </div>
                 <span className="mt-1 block text-[11px] font-medium uppercase tracking-wider text-slate-400">
-                  Anverso (Exemplar #{currentExemplarIndex + 1})
+                  Anverso ({currentExemplarLabel})
                 </span>
               </div>
             )}
             {(currentExemplar.reverso_image || record.reverso_image) && (
-              <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-2 text-center">
-                <img
-                  src={currentExemplar.reverso_image || record.reverso_image}
-                  alt="Reverso"
-                  className="mx-auto h-32 w-full object-contain sm:h-40"
-                />
+              <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-2 text-center">
+                {/* Botões de Rotação Rápida 90° (Reverso) */}
+                <div className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-xl border border-slate-700/80 bg-slate-900/90 p-1 shadow backdrop-blur-sm">
+                  <button
+                    type="button"
+                    onClick={() => handleRotateImage("reverso", -90)}
+                    title="Girar Reverso 90° no sentido anti-horário"
+                    className="rounded-lg p-1 text-slate-300 transition hover:bg-amber-500/20 hover:text-amber-300"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRotateImage("reverso", 90)}
+                    title="Girar Reverso 90° no sentido horário"
+                    className="rounded-lg p-1 text-slate-300 transition hover:bg-amber-500/20 hover:text-amber-300"
+                  >
+                    <RotateCw className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                <div className="flex h-36 items-center justify-center overflow-hidden sm:h-44">
+                  <img
+                    src={currentExemplar.reverso_image || record.reverso_image}
+                    alt="Reverso"
+                    style={
+                      currentExemplar.reverso_rotation
+                        ? {
+                            transform: `rotate(${currentExemplar.reverso_rotation}deg)`,
+                          }
+                        : undefined
+                    }
+                    className="mx-auto max-h-32 max-w-full object-contain sm:max-h-40"
+                  />
+                </div>
                 <span className="mt-1 block text-[11px] font-medium uppercase tracking-wider text-slate-400">
-                  Reverso (Exemplar #{currentExemplarIndex + 1})
+                  Reverso ({currentExemplarLabel})
                 </span>
               </div>
             )}
@@ -655,8 +1152,8 @@ export function TechnicalSheet({
               Exemplares Físicos desta Moeda ({exemplares.length})
             </h2>
             <p className="mt-0.5 text-[11px] text-slate-400">
-              Alterne entre os exemplares para comparar fotos, estado de
-              conservação e notas:
+              Alterne entre os exemplares para comparar gravura, fotos, estado
+              de conservação e notas:
             </p>
           </div>
 
@@ -689,7 +1186,10 @@ export function TechnicalSheet({
 
             <button
               type="button"
-              onClick={() => setShowAddModal((prev) => !prev)}
+              onClick={() => {
+                setNewGravura(currentExemplar.gravura || "");
+                setShowAddModal((prev) => !prev);
+              }}
               className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/25"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -701,12 +1201,14 @@ export function TechnicalSheet({
         {/* Abas de seleção dos exemplares */}
         <div className="mt-3.5 flex flex-wrap gap-2">
           {exemplares.map((ex, idx) => {
-            const isSelected = ex.id === currentExemplar.id;
+            const isSelected = idx === currentExemplarIndex;
+            const label =
+              exemplarDisplayLabels[idx] || `Exemplar #${idx + 1}`;
             return (
               <button
-                key={ex.id}
+                key={ex.id || idx}
                 type="button"
-                onClick={() => setSelectedExemplarId(ex.id)}
+                onClick={() => setSelectedExemplarIndex(idx)}
                 className={`flex flex-col items-start rounded-2xl border px-3.5 py-2 text-left transition ${
                   isSelected
                     ? "border-amber-400 bg-amber-500/15 text-slate-50 shadow"
@@ -715,7 +1217,7 @@ export function TechnicalSheet({
               >
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs font-bold text-amber-300">
-                    Exemplar #{idx + 1}
+                    {label}
                   </span>
                   {ex.variantes_confirmadas?.length > 0 && (
                     <span className="rounded bg-amber-400/20 px-1.5 py-0.2 text-[10px] font-semibold text-amber-300">
@@ -723,11 +1225,11 @@ export function TechnicalSheet({
                     </span>
                   )}
                 </div>
-                <span className="mt-0.5 max-w-[160px] truncate text-[11px]">
+                <span className="mt-0.5 max-w-[180px] truncate text-[11px]">
                   {ex.estado_conservacao}
                 </span>
                 {ex.local_armazenamento && (
-                  <span className="max-w-[160px] truncate text-[10px] text-slate-400">
+                  <span className="max-w-[180px] truncate text-[10px] text-slate-400">
                     {ex.local_armazenamento}
                   </span>
                 )}
@@ -743,8 +1245,20 @@ export function TechnicalSheet({
             className="mt-4 space-y-3 rounded-2xl border border-amber-500/30 bg-slate-950 p-4"
           >
             <p className="text-xs font-semibold text-amber-300">
-              Novo Exemplar Físico de {record.nome} ({record.ano})
+              Novo Exemplar Físico de {standardTitle} ({record.ano})
             </p>
+            <div>
+              <label className="mb-1 block text-[11px] text-slate-300">
+                Gravura / Tema Artístico do Exemplar
+              </label>
+              <input
+                type="text"
+                value={newGravura}
+                onChange={(e) => setNewGravura(e.target.value)}
+                placeholder="Ex: Plano Piloto de Brasília"
+                className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+              />
+            </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className="mb-1 block text-[11px] text-slate-300">
@@ -871,9 +1385,9 @@ export function TechnicalSheet({
               Verificador de Variantes
             </h3>
             <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-              Marque as variações identificadas no{" "}
+              Marque as variações identificadas em{" "}
               <strong className="text-slate-200">
-                Exemplar #{currentExemplarIndex + 1}
+                {currentExemplarLabel}
               </strong>{" "}
               ou adicione uma variação personalizada:
             </p>
@@ -998,10 +1512,10 @@ export function TechnicalSheet({
           <div>
             <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-amber-400">
               <Archive className="h-4 w-4" />
-              Dados Individuais — Exemplar #{currentExemplarIndex + 1}
+              Dados Individuais — {currentExemplarLabel}
             </h3>
             <p className="text-[11px] text-slate-400">
-              Selecione a graduação de conservação, faixa de valor, local de
+              Edite a gravura, graduação de conservação, faixa de valor, local de
               guarda e notas deste exemplar:
             </p>
           </div>
@@ -1036,6 +1550,22 @@ export function TechnicalSheet({
               )}
             </button>
           </div>
+        </div>
+
+        <div>
+          <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-300">
+            Gravura / Tema Artístico deste Exemplar
+          </label>
+          <input
+            type="text"
+            value={gravuraExemplar}
+            onChange={(e) => setGravuraExemplar(e.target.value)}
+            placeholder="Ex: Plano Piloto de Brasília, Efígie da República, Caravela..."
+            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+          />
+          <p className="mt-1 text-[10px] text-slate-400">
+            Se houver múltiplos exemplares com a mesma gravura, eles serão numerados automaticamente (ex: Gravura #1, Gravura #2).
+          </p>
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

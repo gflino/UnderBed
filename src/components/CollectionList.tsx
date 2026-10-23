@@ -18,15 +18,21 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Eye,
 } from "lucide-react";
 import { NumismaticRecord } from "@/types/numismatics";
 import {
   autoBackfillCatalogIds,
   autoOptimizeDatabaseImages,
+  autoStandardizeDatabaseImages,
   deduplicateLocalCollection,
+  formatStandardCoinTitle,
   generateFriendlyCode,
+  getPrimaryFacePreference,
   importCollectionData,
   parseAndValidateBackupJson,
+  PrimaryFacePreference,
+  setPrimaryFacePreference,
 } from "@/lib/storage";
 
 interface CollectionListProps {
@@ -36,11 +42,18 @@ interface CollectionListProps {
   onRecordsOptimized?: () => void;
 }
 
-type SortField = "friendly_code" | "pais" | "um" | "ano" | "valor_face";
+type SortField =
+  | "friendly_code"
+  | "created_at"
+  | "pais"
+  | "um"
+  | "ano"
+  | "valor_face";
 type SortDirection = "asc" | "desc";
 
 const SORT_OPTIONS: Array<{ id: SortField; label: string }> = [
-  { id: "friendly_code", label: "Código Amigável" },
+  { id: "friendly_code", label: "CUB" },
+  { id: "created_at", label: "Ordem de Adição" },
   { id: "pais", label: "País" },
   { id: "um", label: "Unidade Monetária (UM)" },
   { id: "ano", label: "Ano" },
@@ -97,14 +110,25 @@ export function CollectionList({
   const [selectedUM, setSelectedUM] = useState<string>("Todas");
   const [sortBy, setSortBy] = useState<SortField>("friendly_code");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [primaryFace, setPrimaryFace] =
+    useState<PrimaryFacePreference>("anverso");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setPrimaryFace(getPrimaryFacePreference());
+  }, []);
+
+  const handleTogglePrimaryFace = (face: PrimaryFacePreference) => {
+    setPrimaryFace(face);
+    setPrimaryFacePreference(face);
+  };
 
   const handleSortClick = (field: SortField) => {
     if (sortBy === field) {
       setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
     } else {
       setSortBy(field);
-      setSortDirection("asc");
+      setSortDirection(field === "created_at" ? "desc" : "asc");
     }
   };
 
@@ -166,9 +190,12 @@ export function CollectionList({
       const friendlyCode = (
         item.friendly_code || generateFriendlyCode(item)
       ).toLowerCase();
+      const standardTitle = formatStandardCoinTitle(item).toLowerCase();
       return (
         friendlyCode.includes(q) ||
+        standardTitle.includes(q) ||
         item.nome.toLowerCase().includes(q) ||
+        (item.gravura || "").toLowerCase().includes(q) ||
         item.pais.toLowerCase().includes(q) ||
         item.ano.toLowerCase().includes(q) ||
         (item.unidade_monetaria || "").toLowerCase().includes(q) ||
@@ -178,6 +205,7 @@ export function CollectionList({
         item.local_armazenamento.toLowerCase().includes(q) ||
         (item.exemplares || []).some(
           (ex) =>
+            ex.gravura?.toLowerCase().includes(q) ||
             ex.local_armazenamento?.toLowerCase().includes(q) ||
             ex.observacoes?.toLowerCase().includes(q) ||
             ex.estado_conservacao?.toLowerCase().includes(q)
@@ -197,6 +225,15 @@ export function CollectionList({
         });
         if (cmp !== 0) return cmp * dir;
         return (parseYearNumber(a.ano) - parseYearNumber(b.ano)) * dir;
+      }
+
+      if (sortBy === "created_at") {
+        const timeA = Date.parse(a.created_at || "") || 0;
+        const timeB = Date.parse(b.created_at || "") || 0;
+        if (timeA !== timeB) {
+          return (timeA - timeB) * dir;
+        }
+        return (a.id || "").localeCompare(b.id || "") * dir;
       }
 
       if (sortBy === "pais") {
@@ -329,6 +366,17 @@ export function CollectionList({
           `Mesclagem concluída! ${result.added} ficha(s) inédita(s) adicionada(s) e ${result.mergedExemplars} exemplar(es) físico(s) unido(s) aos cards existentes.`
         );
       }
+
+      // Aciona a padronização visual retroativa após qualquer importação de backup JSON
+      autoStandardizeDatabaseImages(undefined, () => {
+        if (onRecordsOptimized) {
+          onRecordsOptimized();
+        }
+      }).then(() => {
+        if (onRecordsOptimized) {
+          onRecordsOptimized();
+        }
+      });
     } catch (err) {
       setImportError(
         err instanceof Error
@@ -525,7 +573,7 @@ export function CollectionList({
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar por moeda, país, ano, KM#, UM, metal ou álbum..."
+            placeholder="Buscar por CUB, valor, gravura, país, ano, KM#, UM, metal ou álbum..."
             className="w-full rounded-2xl border border-slate-800 bg-slate-900/90 py-3 pl-10 pr-4 text-xs text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
           />
         </div>
@@ -547,40 +595,81 @@ export function CollectionList({
         </div>
       </div>
 
-      {/* Barra de Botões de Classificação e Ordenação */}
-      <div className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-slate-800/90 bg-slate-900/70 p-2">
-        <span className="mr-1 inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-          <ArrowUpDown className="h-3 w-3 text-amber-400" />
-          Ordenar:
-        </span>
-        {SORT_OPTIONS.map((option) => {
-          const isActive = sortBy === option.id;
-          return (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => handleSortClick(option.id)}
-              className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition ${
-                isActive
-                  ? "border-amber-500/60 bg-amber-500/20 text-amber-300 shadow-sm"
-                  : "border-slate-800 bg-slate-900/90 text-slate-400 hover:border-slate-700 hover:text-slate-200"
-              }`}
-            >
-              <span>{option.label}</span>
-              {option.id === "ano" && isActive && (
-                <span className="text-[10px] font-medium text-amber-200/90">
-                  ({sortDirection === "asc" ? "Crescente" : "Decrescente"})
-                </span>
-              )}
-              {isActive &&
-                (sortDirection === "asc" ? (
-                  <ArrowUp className="h-3 w-3 text-amber-400" />
-                ) : (
-                  <ArrowDown className="h-3 w-3 text-amber-400" />
-                ))}
-            </button>
-          );
-        })}
+      {/* Barra de Botões de Classificação, Ordenação e Face Principal Padrão */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-800/90 bg-slate-900/70 p-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <ArrowUpDown className="h-3 w-3 text-amber-400" />
+            Ordenar:
+          </span>
+          {SORT_OPTIONS.map((option) => {
+            const isActive = sortBy === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => handleSortClick(option.id)}
+                className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition ${
+                  isActive
+                    ? "border-amber-500/60 bg-amber-500/20 text-amber-300 shadow-sm"
+                    : "border-slate-800 bg-slate-900/90 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                }`}
+              >
+                <span>{option.label}</span>
+                {option.id === "ano" && isActive && (
+                  <span className="text-[10px] font-medium text-amber-200/90">
+                    ({sortDirection === "asc" ? "Crescente" : "Decrescente"})
+                  </span>
+                )}
+                {option.id === "created_at" && isActive && (
+                  <span className="text-[10px] font-medium text-amber-200/90">
+                    (
+                    {sortDirection === "desc"
+                      ? "Mais Recente → Mais Antigo"
+                      : "Mais Antigo → Mais Recente"}
+                    )
+                  </span>
+                )}
+                {isActive &&
+                  (sortDirection === "asc" ? (
+                    <ArrowUp className="h-3 w-3 text-amber-400" />
+                  ) : (
+                    <ArrowDown className="h-3 w-3 text-amber-400" />
+                  ))}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Controle Global de Face Principal Padrão */}
+        <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-950/80 p-1">
+          <span className="inline-flex items-center gap-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            <Eye className="h-3 w-3 text-amber-400" />
+            Capa:
+          </span>
+          <button
+            type="button"
+            onClick={() => handleTogglePrimaryFace("anverso")}
+            className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+              primaryFace === "anverso"
+                ? "bg-amber-500 text-slate-950 shadow-sm"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            Exibir Anverso
+          </button>
+          <button
+            type="button"
+            onClick={() => handleTogglePrimaryFace("reverso")}
+            className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+              primaryFace === "reverso"
+                ? "bg-amber-500 text-slate-950 shadow-sm"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            Exibir Reverso
+          </button>
+        </div>
       </div>
 
       {/* Lista de Fichas de Referência e Exemplares */}
@@ -597,7 +686,7 @@ export function CollectionList({
           <p className="mt-1 max-w-xs text-xs text-slate-400">
             {records.length === 0
               ? "Utilize a aba Classificar para fotografar sua primeira peça ou clique em Importar Backup."
-              : "Tente buscar por outro país, ano, KM# ou local de armazenamento."}
+              : "Tente buscar por outro CUB, país, ano, KM# ou local de armazenamento."}
           </p>
         </div>
       ) : (
@@ -608,6 +697,25 @@ export function CollectionList({
               (acc, ex) => acc + (ex.variantes_confirmadas?.length || 0),
               0
             );
+            const primaryEx = item.exemplares?.[0];
+            const thumbnailImage =
+              primaryFace === "reverso"
+                ? primaryEx?.reverso_image ||
+                  item.reverso_image ||
+                  primaryEx?.anverso_image ||
+                  item.anverso_image
+                : primaryEx?.anverso_image ||
+                  item.anverso_image ||
+                  primaryEx?.reverso_image ||
+                  item.reverso_image;
+
+            const thumbnailRotation =
+              primaryFace === "reverso"
+                ? primaryEx?.reverso_rotation ?? item.reverso_rotation ?? 0
+                : primaryEx?.anverso_rotation ?? item.anverso_rotation ?? 0;
+
+            const standardTitle = formatStandardCoinTitle(item);
+            const cubCode = item.friendly_code || generateFriendlyCode(item);
 
             return (
               <button
@@ -618,10 +726,17 @@ export function CollectionList({
               >
                 {/* Miniatura */}
                 <div className="relative flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
-                  {item.anverso_image ? (
+                  {thumbnailImage ? (
                     <img
-                      src={item.anverso_image}
-                      alt={item.nome}
+                      src={thumbnailImage}
+                      alt={standardTitle}
+                      style={
+                        thumbnailRotation
+                          ? {
+                              transform: `rotate(${thumbnailRotation}deg)`,
+                            }
+                          : undefined
+                      }
                       className="h-full w-full object-contain"
                     />
                   ) : (
@@ -634,11 +749,14 @@ export function CollectionList({
                   )}
                 </div>
 
-                {/* Informações Principais na ordem: Código Amigável Universal em evidência máxima, País, Unidade Monetária, Ano */}
+                {/* Informações Principais na ordem: CUB em evidência máxima, País, Unidade Monetária, Ano */}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="inline-flex items-center rounded-md border border-amber-400/50 bg-amber-500/20 px-2 py-0.5 font-mono text-[11px] font-extrabold tracking-wide text-amber-200 shadow-sm">
-                      {item.friendly_code || generateFriendlyCode(item)}
+                    <span
+                      title="CUB (Código Universal de Base)"
+                      className="inline-flex items-center rounded-md border border-amber-400/50 bg-amber-500/20 px-2 py-0.5 font-mono text-[11px] font-extrabold tracking-wide text-amber-200 shadow-sm"
+                    >
+                      {cubCode}
                     </span>
 
                     <span className="truncate text-xs font-semibold text-amber-400">
@@ -671,7 +789,7 @@ export function CollectionList({
                   </div>
 
                   <h3 className="truncate text-sm font-bold text-slate-100">
-                    {item.nome}
+                    {standardTitle}
                   </h3>
 
                   <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">

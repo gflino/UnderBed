@@ -2,18 +2,43 @@ import {
   NumismaticClassification,
   NumismaticExemplar,
   NumismaticRecord,
+  StandardizeImageResponse,
 } from "@/types/numismatics";
 import { autoCropAndCompressCoin, base64ToBlob } from "@/lib/image-utils";
+import {
+  cropCenterAndRotateCoin,
+  rotateBase64Image,
+} from "@/lib/imageProcessor";
+
+export { cropCenterAndRotateCoin, rotateBase64Image };
 
 const STORAGE_KEY = "underbed:collection:v2";
 const CROP_MIGRATION_KEY = "underbed_crop_migration_v3";
+const PRIMARY_FACE_STORAGE_KEY = "underbed:primary_face";
+
+export type PrimaryFacePreference = "anverso" | "reverso";
+
+export function getPrimaryFacePreference(): PrimaryFacePreference {
+  if (typeof window === "undefined") return "anverso";
+  const val = window.localStorage.getItem(PRIMARY_FACE_STORAGE_KEY);
+  return val === "reverso" ? "reverso" : "anverso";
+}
+
+export function setPrimaryFacePreference(face: PrimaryFacePreference): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(PRIMARY_FACE_STORAGE_KEY, face);
+}
 
 export interface CollectionRepository {
   list(): Promise<NumismaticRecord[]>;
   getById(id: string): Promise<NumismaticRecord | null>;
   create(
     data: NumismaticClassification,
-    images?: { anverso?: string; reverso?: string }
+    images?: {
+      anverso?: string;
+      reverso?: string;
+      alreadyStandardized?: boolean;
+    }
   ): Promise<{
     record: NumismaticRecord;
     exemplarId: string;
@@ -22,6 +47,7 @@ export interface CollectionRepository {
   addExemplar(
     recordId: string,
     exemplarData: {
+      gravura?: string;
       estado_conservacao: string;
       valor_mercado_min_brl: number;
       valor_mercado_max_brl: number;
@@ -31,6 +57,9 @@ export interface CollectionRepository {
       variantes_confirmadas?: string[];
       anverso_image?: string;
       reverso_image?: string;
+      anverso_rotation?: number;
+      reverso_rotation?: number;
+      image_standardized?: boolean;
     }
   ): Promise<{ record: NumismaticRecord; exemplarId: string } | null>;
   updateExemplar(
@@ -39,6 +68,7 @@ export interface CollectionRepository {
     patch: Partial<
       Pick<
         NumismaticExemplar,
+        | "gravura"
         | "estado_conservacao"
         | "valor_mercado_min_brl"
         | "valor_mercado_max_brl"
@@ -46,9 +76,38 @@ export interface CollectionRepository {
         | "observacoes"
         | "variantes_confirmadas"
         | "alertas_conservacao"
+        | "anverso_image"
+        | "reverso_image"
+        | "anverso_rotation"
+        | "reverso_rotation"
+        | "image_standardized"
       >
     > & {
       alertas_variantes_raras?: string[];
+    }
+  ): Promise<NumismaticRecord | null>;
+  updateRecord(
+    recordId: string,
+    patch: Partial<
+      Pick<
+        NumismaticRecord,
+        | "nome"
+        | "pais"
+        | "ano"
+        | "valor_face"
+        | "unidade_monetaria"
+        | "casa_moeda"
+        | "material"
+        | "peso_gramas"
+        | "diametro_mm"
+        | "bordo"
+        | "krause_id"
+        | "numista_id"
+        | "curiosidades"
+      >
+    > & {
+      gravura?: string;
+      exemplarId?: string;
     }
   ): Promise<NumismaticRecord | null>;
   removeExemplar(
@@ -404,19 +463,109 @@ export const generateFriendlyCode = (
 };
 
 export const getCoinTypeKey = (record: Partial<NumismaticRecord>): string => {
-  const friendly = (
-    record.friendly_code?.trim() || generateFriendlyCode(record)
-  )
-    .toUpperCase()
-    .trim();
+  const friendly = generateFriendlyCode(record).toUpperCase().trim();
   return friendly;
+};
+
+/**
+ * Formata o título principal do card/registro seguindo estritamente a regra:
+ * `[Valor Facial] - [Unidade Monetária]` (ex: `50 Centavos - Cruzeiro`, `50 Won - Won Sul-Coreano`, `400 Réis - Réis`).
+ */
+export function formatStandardCoinTitle(
+  record: Partial<NumismaticRecord>
+): string {
+  const rawValor = String(record.valor_face || "")
+    .replace(/\s*\([^)]*\)\s*/g, " ")
+    .split(/\s*[-—–]\s*/)[0]
+    .trim();
+  const rawUM = String(record.unidade_monetaria || "").trim();
+
+  if (rawValor && rawUM) {
+    return `${rawValor} - ${rawUM}`;
+  }
+  if (rawValor) {
+    return rawValor;
+  }
+  const fallbackName = String(record.nome || "")
+    .split(/\s*[-—–]\s*/)[0]
+    .trim();
+  if (fallbackName && rawUM) {
+    return `${fallbackName} - ${rawUM}`;
+  }
+  return fallbackName || "Peça Numismática";
+}
+
+/**
+ * Extrai a gravura/detalhamento temático de um registro legado quando `nome` continha
+ * o formato antigo `"Valor - Efígie/Tema"`.
+ */
+function extractLegacyGravuraFromRecord(
+  rawRecord: Partial<NumismaticRecord> & { gravura?: string }
+): string | undefined {
+  if (typeof rawRecord.gravura === "string" && rawRecord.gravura.trim()) {
+    return rawRecord.gravura.trim();
+  }
+  const rawName = String(rawRecord.nome || "").trim();
+  const parts = rawName.split(/\s*[-—–]\s*/);
+  if (parts.length >= 2) {
+    const candidate = parts.slice(1).join(" - ").trim();
+    const umNorm = normalize(rawRecord.unidade_monetaria);
+    if (candidate && normalize(candidate) !== umNorm) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Gera os rótulos de exibição dos exemplares físicos aplicando numeração sequencial
+ * automática (`#1`, `#2`) quando múltiplos exemplares compartilham a mesma gravura.
+ */
+export function getExemplarDisplayLabels(
+  exemplares: NumismaticExemplar[]
+): string[] {
+  const baseLabels = exemplares.map(
+    (ex) => (ex.gravura || "").trim() || "Exemplar"
+  );
+  const counts = new Map<string, number>();
+  for (const label of baseLabels) {
+    const key = normalize(label);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+
+  const seen = new Map<string, number>();
+  return baseLabels.map((label) => {
+    const key = normalize(label);
+    const total = counts.get(key) || 1;
+    const nextIdx = (seen.get(key) || 0) + 1;
+    seen.set(key, nextIdx);
+
+    if (total > 1 || key === "exemplar") {
+      return `${label} #${nextIdx}`;
+    }
+    return label;
+  });
+}
+
+const normalizeRotation = (angle?: number): number => {
+  const num = Number(angle) || 0;
+  const mod = ((num % 360) + 360) % 360;
+  if (mod === 90 || mod === 180 || mod === 270) return mod;
+  return 0;
 };
 
 function sanitizeExemplar(
   rawEx: Partial<NumismaticExemplar> | undefined,
-  fallbackRecord?: Partial<NumismaticRecord>
+  fallbackRecord?: Partial<NumismaticRecord> & { gravura?: string }
 ): NumismaticExemplar {
   const now = new Date().toISOString();
+  const gravura =
+    typeof rawEx?.gravura === "string" && rawEx.gravura.trim()
+      ? rawEx.gravura.trim()
+      : fallbackRecord
+        ? extractLegacyGravuraFromRecord(fallbackRecord)
+        : undefined;
+
   return {
     id:
       typeof rawEx?.id === "string" && rawEx.id.trim()
@@ -424,6 +573,7 @@ function sanitizeExemplar(
         : generateId("ex"),
     created_at: rawEx?.created_at || fallbackRecord?.created_at || now,
     updated_at: rawEx?.updated_at || fallbackRecord?.updated_at || now,
+    ...(gravura ? { gravura } : {}),
     estado_conservacao:
       rawEx?.estado_conservacao || fallbackRecord?.estado_conservacao || "MBC",
     valor_mercado_min_brl:
@@ -452,10 +602,23 @@ function sanitizeExemplar(
         : fallbackRecord?.local_armazenamento || "",
     anverso_image: rawEx?.anverso_image ?? fallbackRecord?.anverso_image,
     reverso_image: rawEx?.reverso_image ?? fallbackRecord?.reverso_image,
+    anverso_rotation: normalizeRotation(
+      rawEx?.anverso_rotation ?? fallbackRecord?.anverso_rotation
+    ),
+    reverso_rotation: normalizeRotation(
+      rawEx?.reverso_rotation ?? fallbackRecord?.reverso_rotation
+    ),
+    ...(rawEx?.image_standardized !== undefined
+      ? { image_standardized: Boolean(rawEx.image_standardized) }
+      : fallbackRecord?.image_standardized !== undefined
+        ? { image_standardized: Boolean(fallbackRecord.image_standardized) }
+        : {}),
   };
 }
 
-function ensureExemplaresArray(rawRecord: Partial<NumismaticRecord>): NumismaticExemplar[] {
+function ensureExemplaresArray(
+  rawRecord: Partial<NumismaticRecord> & { gravura?: string }
+): NumismaticExemplar[] {
   if (Array.isArray(rawRecord.exemplares) && rawRecord.exemplares.length > 0) {
     return rawRecord.exemplares.map((ex) => sanitizeExemplar(ex, rawRecord));
   }
@@ -464,10 +627,11 @@ function ensureExemplaresArray(rawRecord: Partial<NumismaticRecord>): Numismatic
 
 /**
  * Sanitiza estritamente o registro mantendo apenas o `id` principal, `krause_id`,
- * `numista_id` e os `exemplares[].id`, removendo quaisquer IDs ou campos legados.
+ * `numista_id` e os `exemplares[].id`, padronizando o título `[Valor Facial] - [Unidade Monetária]`
+ * e recalculando o CUB (`friendly_code`).
  */
 function syncRecordWithPrimaryExemplar(
-  rawRecord: Partial<NumismaticRecord>
+  rawRecord: Partial<NumismaticRecord> & { gravura?: string }
 ): NumismaticRecord {
   const now = new Date().toISOString();
   const exemplares = ensureExemplaresArray(rawRecord);
@@ -487,6 +651,11 @@ function syncRecordWithPrimaryExemplar(
       ? rawRecord.unidade_monetaria.trim()
       : undefined;
 
+  const standardizedName = formatStandardCoinTitle({
+    ...rawRecord,
+    unidade_monetaria: unidadeMonetaria,
+  });
+
   const baseRecord: NumismaticRecord = {
     id:
       typeof rawRecord.id === "string" && rawRecord.id.trim()
@@ -494,7 +663,7 @@ function syncRecordWithPrimaryExemplar(
         : generateId("ref"),
     created_at: rawRecord.created_at || now,
     updated_at: rawRecord.updated_at || now,
-    nome: String(rawRecord.nome || "").trim(),
+    nome: standardizedName,
     pais: String(rawRecord.pais || "").trim(),
     valor_face: String(rawRecord.valor_face || "").trim(),
     ...(unidadeMonetaria ? { unidade_monetaria: unidadeMonetaria } : {}),
@@ -529,6 +698,15 @@ function syncRecordWithPrimaryExemplar(
     ...(numistaId ? { numista_id: numistaId } : {}),
     anverso_image: primary?.anverso_image ?? rawRecord.anverso_image,
     reverso_image: primary?.reverso_image ?? rawRecord.reverso_image,
+    anverso_rotation: normalizeRotation(
+      primary?.anverso_rotation ?? rawRecord.anverso_rotation
+    ),
+    reverso_rotation: normalizeRotation(
+      primary?.reverso_rotation ?? rawRecord.reverso_rotation
+    ),
+    image_standardized:
+      exemplares.length > 0 &&
+      exemplares.every((ex) => Boolean(ex.image_standardized)),
     exemplares,
   };
 
@@ -653,6 +831,197 @@ export async function autoOptimizeDatabaseImages(): Promise<boolean> {
 
   window.localStorage.setItem(CROP_MIGRATION_KEY, "done");
   return anyModified;
+}
+
+type StandardizationListener = {
+  onProgress?: (current: number, total: number) => void;
+  onItemUpdated?: () => void;
+};
+
+let activeStandardizationPromise: Promise<boolean> | null = null;
+const standardizationListeners = new Set<StandardizationListener>();
+
+/**
+ * Varredura retroativa sequencial em toda a base de dados local:
+ * Filtra todos os exemplares sem `image_standardized: true`, envia `anverso_image` e `reverso_image`
+ * para `/api/standardize-image`, aplica `cropCenterAndRotateCoin` (600x600 1:1 em pé),
+ * zera `anverso_rotation`/`reverso_rotation`, marca `image_standardized = true` e salva a cada exemplar.
+ */
+export async function autoStandardizeDatabaseImages(
+  onProgress?: (current: number, total: number) => void,
+  onItemUpdated?: () => void
+): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+
+  const listener: StandardizationListener = { onProgress, onItemUpdated };
+  standardizationListeners.add(listener);
+
+  if (activeStandardizationPromise) {
+    try {
+      return await activeStandardizationPromise;
+    } finally {
+      standardizationListeners.delete(listener);
+    }
+  }
+
+  activeStandardizationPromise = (async () => {
+    let anyUpdated = false;
+
+    try {
+      const initialRecords = readLocalRecords();
+      const queue: Array<{ recordId: string; exemplarId: string }> = [];
+
+      let markedEmpty = false;
+      for (const rec of initialRecords) {
+        for (const ex of rec.exemplares || []) {
+          if (ex.image_standardized) continue;
+          const hasAnverso =
+            typeof ex.anverso_image === "string" &&
+            ex.anverso_image.trim().length > 0;
+          const hasReverso =
+            typeof ex.reverso_image === "string" &&
+            ex.reverso_image.trim().length > 0;
+          if (!hasAnverso && !hasReverso) {
+            ex.image_standardized = true;
+            markedEmpty = true;
+          } else {
+            queue.push({ recordId: rec.id, exemplarId: ex.id });
+          }
+        }
+      }
+
+      if (markedEmpty) {
+        writeLocalRecords(
+          initialRecords.map((r) => syncRecordWithPrimaryExemplar(r))
+        );
+      }
+
+      const total = queue.length;
+      if (total === 0) {
+        return markedEmpty;
+      }
+
+      for (let i = 0; i < total; i++) {
+        const currentStep = i + 1;
+        const { recordId, exemplarId } = queue[i];
+
+        standardizationListeners.forEach((l) => {
+          l.onProgress?.(currentStep, total);
+        });
+
+        // Lê o estado mais recente antes de processar este exemplar
+        const currentRecords = readLocalRecords();
+        const targetRec = currentRecords.find((r) => r.id === recordId);
+        const targetEx = targetRec?.exemplares?.find(
+          (e) => e.id === exemplarId
+        );
+
+        if (!targetRec || !targetEx || targetEx.image_standardized) {
+          continue;
+        }
+
+        try {
+          const response = await fetch("/api/standardize-image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              anverso_image: targetEx.anverso_image,
+              reverso_image: targetEx.reverso_image,
+            }),
+          });
+
+          if (!response.ok) {
+            console.warn(
+              `[autoStandardizeDatabaseImages] Falha na API (${response.status}) para exemplar ${exemplarId}`
+            );
+            continue;
+          }
+
+          const boxes = (await response.json()) as StandardizeImageResponse;
+
+          let newAnverso = targetEx.anverso_image;
+          let newReverso = targetEx.reverso_image;
+
+          if (targetEx.anverso_image) {
+            newAnverso = await cropCenterAndRotateCoin(
+              targetEx.anverso_image,
+              boxes.anverso_box,
+              boxes.anverso_rotation
+            );
+          }
+
+          if (targetEx.reverso_image) {
+            newReverso = await cropCenterAndRotateCoin(
+              targetEx.reverso_image,
+              boxes.reverso_box,
+              boxes.reverso_rotation
+            );
+          }
+
+          // Re-lê registros locais para não sobrescrever edições concorrentes do usuário
+          const latestRecords = readLocalRecords();
+          const recIdx = latestRecords.findIndex((r) => r.id === recordId);
+          if (recIdx !== -1) {
+            const rec = latestRecords[recIdx];
+            const updatedExemplares = (rec.exemplares || []).map((ex) =>
+              ex.id === exemplarId
+                ? {
+                    ...ex,
+                    anverso_image: newAnverso,
+                    reverso_image: newReverso,
+                    anverso_rotation: 0,
+                    reverso_rotation: 0,
+                    image_standardized: true,
+                    updated_at: new Date().toISOString(),
+                  }
+                : ex
+            );
+
+            // syncRecordWithPrimaryExemplar atualiza automaticamente as fotos do card principal se for o Exemplar #1
+            latestRecords[recIdx] = syncRecordWithPrimaryExemplar({
+              ...rec,
+              anverso_image:
+                rec.exemplares?.[0]?.id === exemplarId
+                  ? newAnverso
+                  : rec.anverso_image,
+              reverso_image:
+                rec.exemplares?.[0]?.id === exemplarId
+                  ? newReverso
+                  : rec.reverso_image,
+              anverso_rotation:
+                rec.exemplares?.[0]?.id === exemplarId
+                  ? 0
+                  : rec.anverso_rotation,
+              reverso_rotation:
+                rec.exemplares?.[0]?.id === exemplarId
+                  ? 0
+                  : rec.reverso_rotation,
+              exemplares: updatedExemplares,
+            });
+
+            writeLocalRecords(latestRecords);
+            anyUpdated = true;
+
+            standardizationListeners.forEach((l) => {
+              l.onItemUpdated?.();
+            });
+          }
+        } catch (err) {
+          console.warn(
+            `[autoStandardizeDatabaseImages] Erro ao padronizar exemplar ${exemplarId}:`,
+            err
+          );
+        }
+      }
+
+      return anyUpdated;
+    } finally {
+      activeStandardizationPromise = null;
+      standardizationListeners.delete(listener);
+    }
+  })();
+
+  return activeStandardizationPromise;
 }
 
 /**
@@ -902,6 +1271,9 @@ export function parseAndValidateBackupJson(
       numista_id: r.numista_id,
       anverso_image: r.anverso_image,
       reverso_image: r.reverso_image,
+      anverso_rotation: r.anverso_rotation,
+      reverso_rotation: r.reverso_rotation,
+      image_standardized: r.image_standardized,
       exemplares: r.exemplares,
       created_at: r.created_at || new Date().toISOString(),
       updated_at: r.updated_at || new Date().toISOString(),
@@ -1037,18 +1409,55 @@ export const numismaticRepository: CollectionRepository = {
 
   async create(
     data: NumismaticClassification,
-    images?: { anverso?: string; reverso?: string }
+    images?: {
+      anverso?: string;
+      reverso?: string;
+      alreadyStandardized?: boolean;
+    }
   ): Promise<{
     record: NumismaticRecord;
     exemplarId: string;
     isNewExemplarOnExistingRef: boolean;
   }> {
+    let finalAnverso = images?.anverso;
+    let finalReverso = images?.reverso;
+
+    if (!images?.alreadyStandardized) {
+      if (finalAnverso && data.anverso_box) {
+        try {
+          finalAnverso = await cropCenterAndRotateCoin(
+            finalAnverso,
+            data.anverso_box,
+            data.anverso_rotation ?? 0
+          );
+        } catch (err) {
+          console.warn("Falha ao padronizar anverso no create:", err);
+        }
+      }
+      if (finalReverso && data.reverso_box) {
+        try {
+          finalReverso = await cropCenterAndRotateCoin(
+            finalReverso,
+            data.reverso_box,
+            data.reverso_rotation ?? 0
+          );
+        } catch (err) {
+          console.warn("Falha ao padronizar reverso no create:", err);
+        }
+      }
+    }
+
     const items = readLocalRecords();
     const now = new Date().toISOString();
     const newExemplar: NumismaticExemplar = {
       id: generateId("ex"),
       created_at: now,
       updated_at: now,
+      ...(data.gravura?.trim()
+        ? { gravura: data.gravura.trim() }
+        : extractLegacyGravuraFromRecord(data)
+          ? { gravura: extractLegacyGravuraFromRecord(data) }
+          : {}),
       estado_conservacao: data.estado_conservacao,
       valor_mercado_min_brl: data.valor_mercado_min_brl,
       valor_mercado_max_brl: data.valor_mercado_max_brl,
@@ -1056,8 +1465,11 @@ export const numismaticRepository: CollectionRepository = {
       variantes_confirmadas: [],
       observacoes: data.observacoes || "",
       local_armazenamento: data.local_armazenamento || "",
-      anverso_image: images?.anverso,
-      reverso_image: images?.reverso,
+      anverso_image: finalAnverso,
+      reverso_image: finalReverso,
+      anverso_rotation: 0,
+      reverso_rotation: 0,
+      image_standardized: true,
     };
 
     const incomingKey = getCoinTypeKey(data);
@@ -1081,8 +1493,8 @@ export const numismaticRepository: CollectionRepository = {
         krause_id: existing.krause_id || data.krause_id,
         numista_id: existing.numista_id || data.numista_id,
         alertas_variantes_raras: mergedVariants,
-        anverso_image: existing.anverso_image || images?.anverso,
-        reverso_image: existing.reverso_image || images?.reverso,
+        anverso_image: existing.anverso_image || finalAnverso,
+        reverso_image: existing.reverso_image || finalReverso,
         exemplares: [newExemplar, ...existing.exemplares],
       });
 
@@ -1100,8 +1512,11 @@ export const numismaticRepository: CollectionRepository = {
       id: generateId("ref"),
       created_at: now,
       updated_at: now,
-      anverso_image: images?.anverso,
-      reverso_image: images?.reverso,
+      anverso_image: finalAnverso,
+      reverso_image: finalReverso,
+      anverso_rotation: 0,
+      reverso_rotation: 0,
+      image_standardized: true,
       exemplares: [newExemplar],
     });
 
@@ -1126,6 +1541,11 @@ export const numismaticRepository: CollectionRepository = {
       id: generateId("ex"),
       created_at: now,
       updated_at: now,
+      ...(exemplarData.gravura?.trim()
+        ? { gravura: exemplarData.gravura.trim() }
+        : items[index].exemplares?.[0]?.gravura
+          ? { gravura: items[index].exemplares[0].gravura }
+          : {}),
       estado_conservacao: exemplarData.estado_conservacao,
       valor_mercado_min_brl: exemplarData.valor_mercado_min_brl,
       valor_mercado_max_brl: exemplarData.valor_mercado_max_brl,
@@ -1138,6 +1558,8 @@ export const numismaticRepository: CollectionRepository = {
       local_armazenamento: exemplarData.local_armazenamento,
       anverso_image: exemplarData.anverso_image,
       reverso_image: exemplarData.reverso_image,
+      anverso_rotation: normalizeRotation(exemplarData.anverso_rotation),
+      reverso_rotation: normalizeRotation(exemplarData.reverso_rotation),
     };
 
     const updated = syncRecordWithPrimaryExemplar({
@@ -1177,6 +1599,61 @@ export const numismaticRepository: CollectionRepository = {
       ...(Array.isArray(alertas_variantes_raras)
         ? { alertas_variantes_raras }
         : {}),
+      updated_at: now,
+      exemplares: updatedExemplares,
+    });
+
+    items[index] = updated;
+    writeLocalRecords(items);
+    return updated;
+  },
+
+  async updateRecord(
+    recordId: string,
+    patch
+  ): Promise<NumismaticRecord | null> {
+    const items = readLocalRecords();
+    const index = items.findIndex((item) => item.id === recordId);
+    if (index === -1) return null;
+
+    const current = items[index];
+    const now = new Date().toISOString();
+    const { gravura, exemplarId, ...recordFields } = patch;
+
+    const updatedExemplares = current.exemplares.map((ex, idx) => {
+      if (
+        typeof gravura === "string" &&
+        ((exemplarId && ex.id === exemplarId) || (!exemplarId && idx === 0))
+      ) {
+        return {
+          ...ex,
+          gravura: gravura.trim() || undefined,
+          updated_at: now,
+        };
+      }
+      return ex;
+    });
+
+    const nextValorFace =
+      recordFields.valor_face !== undefined
+        ? recordFields.valor_face.trim()
+        : current.valor_face;
+    const nextUM =
+      recordFields.unidade_monetaria !== undefined
+        ? recordFields.unidade_monetaria.trim()
+        : current.unidade_monetaria;
+
+    const updated = syncRecordWithPrimaryExemplar({
+      ...current,
+      ...recordFields,
+      valor_face: nextValorFace,
+      unidade_monetaria: nextUM,
+      nome: formatStandardCoinTitle({
+        ...current,
+        ...recordFields,
+        valor_face: nextValorFace,
+        unidade_monetaria: nextUM,
+      }),
       updated_at: now,
       exemplares: updatedExemplares,
     });

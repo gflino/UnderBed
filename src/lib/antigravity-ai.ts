@@ -2,6 +2,7 @@ import { GoogleGenAI, Schema, Type } from "@google/genai";
 import {
   ClassifyImageInput,
   NumismaticClassification,
+  StandardizeImageResponse,
 } from "@/types/numismatics";
 
 export const NUMISMATIC_RESPONSE_SCHEMA: Schema = {
@@ -12,7 +13,12 @@ export const NUMISMATIC_RESPONSE_SCHEMA: Schema = {
     nome: {
       type: Type.STRING,
       description:
-        "Nome/título numismático completo da peça (ex: '1 Real - Cruzeiro do Sul (1ª Família)', 'Eisenhower Dollar', '500 Réis - Dom Pedro II').",
+        "Título padronizado estritamente no formato '[Valor Facial] - [Unidade Monetária]' sem efígie ou tema (ex: '50 Centavos - Cruzeiro', '50 Won - Won Sul-Coreano', '400 Réis - Réis', '1 Real - Real').",
+    },
+    gravura: {
+      type: Type.STRING,
+      description:
+        "Detalhamento artístico, gravura ou efígie temática específica retratada no exemplar (ex: 'Plano Piloto de Brasília', 'Dom Pedro II', 'Cruzeiro do Sul (1ª Família)', 'Dwight D. Eisenhower / Apollo 11').",
     },
     pais: {
       type: Type.STRING,
@@ -120,9 +126,32 @@ export const NUMISMATIC_RESPONSE_SCHEMA: Schema = {
       description:
         "Índice baseado em zero (0 para a Imagem #0, 1 para a Imagem #1, ou -1 se apenas 1 imagem foi enviada) que corresponde ao REVERSO (valor facial/reverso/estampa oposta) da moeda ou cédula.",
     },
+    anverso_box: {
+      type: Type.ARRAY,
+      items: { type: Type.NUMBER },
+      description:
+        "Array de 4 números [ymin, xmin, ymax, xmax] na escala de 0 a 1000 delimitando estritamente a borda física da moeda na foto correspondente ao ANVERSO (ignorando sombras projetadas no fundo branco/papel).",
+    },
+    anverso_rotation: {
+      type: Type.INTEGER,
+      description:
+        "Ângulo inteiro (0, 90, 180 ou 270) no sentido horário necessário para girar a foto do ANVERSO para deixá-la perfeitamente 'em pé' (alinhado pelo topo da efígie/brasão e leitura horizontal das legendas e datas).",
+    },
+    reverso_box: {
+      type: Type.ARRAY,
+      items: { type: Type.NUMBER },
+      description:
+        "Array de 4 números [ymin, xmin, ymax, xmax] na escala de 0 a 1000 delimitando estritamente a borda física da moeda na foto correspondente ao REVERSO (ignorando sombras projetadas no fundo branco/papel).",
+    },
+    reverso_rotation: {
+      type: Type.INTEGER,
+      description:
+        "Ângulo inteiro (0, 90, 180 ou 270) no sentido horário necessário para girar a foto do REVERSO para deixá-la perfeitamente 'em pé' (leitura horizontal do valor facial, legendas e datas).",
+    },
   },
   required: [
     "nome",
+    "gravura",
     "pais",
     "valor_face",
     "unidade_monetaria",
@@ -144,6 +173,10 @@ export const NUMISMATIC_RESPONSE_SCHEMA: Schema = {
     "numista_id",
     "indice_anverso",
     "indice_reverso",
+    "anverso_box",
+    "anverso_rotation",
+    "reverso_box",
+    "reverso_rotation",
   ],
 };
 
@@ -156,6 +189,8 @@ Diretrizes obrigatórias:
    - Determine qual índice (0 ou 1) é o ANVERSO (geralmente traz a efígie do monarca/personalidade/República, brasão de armas nacional ou autoridade emissora, ou a frente com chancelas em cédulas) e preencha "indice_anverso".
    - Determine qual índice (0 ou 1, ou -1 se houver apenas uma foto) é o REVERSO (geralmente traz o valor de face em destaque, cena alegórica/fauna/flora ou reverso da cédula) e preencha "indice_reverso".
 2. Identifique com precisão a peça, país emissor, valor de face, a unidade monetária padronizada ("unidade_monetaria", ex: 'Cruzeiro', 'Réis', 'Real', 'Cruzado', 'Dólar Americano', 'Won Sul-Coreano'), ano visível e casa da moeda (observe letras monetárias/mint marks quando visíveis).
+   - O campo "nome" deve seguir OBRIGATORIAMENTE o padrão "[Valor Facial] - [Unidade Monetária]" sem nomes de efígies ou temas longos (ex: "50 Centavos - Cruzeiro", "50 Won - Won Sul-Coreano", "400 Réis - Réis").
+   - O detalhamento artístico/temático ou efígie deve ser preenchido exclusivamente no campo "gravura" (ex: "Plano Piloto de Brasília", "Dom Pedro II", "Cruzeiro do Sul (1ª Família)").
 3. CÓDIGOS DE CATÁLOGO OBRIGATÓRIOS (krause_id e numista_id):
    - Identifique e preencha sempre "krause_id" com o código Krause oficial para moedas (formato 'KM# 594') ou Pick para cédulas (formato 'P# 102').
    - Identifique e preencha sempre "numista_id" com o código correspondente no catálogo Numista (formato 'N# 4512').
@@ -164,7 +199,10 @@ Diretrizes obrigatórias:
 6. Estime a faixa de valor de mercado praticada no mercado numismático brasileiro em Reais (BRL) para o estado de conservação observado.
 7. REGRA CRÍTICA SOBRE VARIANTES E EIXO DE CUNHO: NUNCA tente diagnosticar falha de eixo ou orientação de cunho (como Reverso Invertido ou Reverso Horizontal) comparando a rotação das fotos de anverso e reverso, pois o usuário gira a câmera/moeda manualmente entre as fotos. Em vez disso, preencha "alertas_variantes_raras" como uma lista de sugestões inteligentes baseadas na base numismática oficial daquele ano/modelo para que o usuário teste fisicamente em mãos e marque na ficha interativa.
 8. Em "alertas_conservacao", aponte sinais visíveis nas imagens (oxidação, zinabre, contaminação por PVC, limpeza mecânica/polimento, mossas no bordo, rasgos ou manchas de ferrugem de grampo) ou cuidados essenciais para o metal/papel da peça.
-9. Em "curiosidades", escreva um texto rico e envolvente com contexto histórico, tiragem aproximada, simbologia do anverso/reverso e curiosidades numismáticas.`;
+9. Em "curiosidades", escreva um texto rico e envolvente com contexto histórico, tiragem aproximada, simbologia do anverso/reverso e curiosidades numismáticas.
+10. DETECÇÃO DE CAIXA DELIMITADORA (BOUNDING BOX) E ORIENTAÇÃO EM PÉ:
+   - Para a imagem identificada como ANVERSO ("indice_anverso"), retorne "anverso_box": [ymin, xmin, ymax, xmax] na escala de 0 a 1000 delimitando estritamente a borda física externa da moeda (ignorando sombras projetadas na mesa/papel) e "anverso_rotation" (0, 90, 180 ou 270 graus no sentido horário) necessário para girar a foto e deixar o anverso perfeitamente "em pé" (topo da efígie/cabeça/brasão apontando para cima e leitura correta).
+   - Para a imagem identificada como REVERSO ("indice_reverso"), retorne "reverso_box": [ymin, xmin, ymax, xmax] na escala de 0 a 1000 delimitando estritamente a borda física da moeda e "reverso_rotation" (0, 90, 180 ou 270 graus no sentido horário) necessário para deixar o reverso perfeitamente "em pé" (leitura horizontal natural do valor facial, data e legendas). Caso apenas 1 imagem tenha sido enviada, repita [0, 0, 1000, 1000] e 0 para o reverso.`;
 
 const MAX_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 2000;
@@ -263,7 +301,12 @@ ${params.localArmazenamentoInicial ? `Local de armazenamento informado pelo cole
         throw new Error("O modelo Gemini retornou uma resposta vazia.");
       }
 
-      return JSON.parse(rawText) as NumismaticClassification;
+      const parsed = JSON.parse(rawText) as NumismaticClassification;
+      parsed.anverso_box = sanitizeBoundingBox(parsed.anverso_box);
+      parsed.anverso_rotation = sanitizeRotationAngle(parsed.anverso_rotation);
+      parsed.reverso_box = sanitizeBoundingBox(parsed.reverso_box);
+      parsed.reverso_rotation = sanitizeRotationAngle(parsed.reverso_rotation);
+      return parsed;
     } catch (err) {
       lastError = err;
       const errText = err instanceof Error ? err.message : String(err);
@@ -295,4 +338,214 @@ ${params.localArmazenamentoInicial ? `Local de armazenamento informado pelo cole
   throw lastError instanceof Error
     ? lastError
     : new Error("Falha ao classificar a peça numismática após 5 tentativas.");
+}
+
+export const STANDARDIZE_IMAGE_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  description:
+    "Detecção de caixa delimitadora (bounding box 0-1000) da borda física da moeda e ângulo de rotação horário (0, 90, 180, 270) para deixar Anverso e Reverso perfeitamente em pé.",
+  properties: {
+    anverso_box: {
+      type: Type.ARRAY,
+      items: { type: Type.NUMBER },
+      description:
+        "Array de 4 números [ymin, xmin, ymax, xmax] na escala de 0 a 1000 delimitando estritamente a borda física da moeda no anverso (ignorando sombras projetadas no fundo branco/papel).",
+    },
+    anverso_rotation: {
+      type: Type.INTEGER,
+      description:
+        "Ângulo inteiro (0, 90, 180 ou 270) no sentido horário necessário para deixar o anverso perfeitamente 'em pé' (alinhado pelo topo da efígie/brasão e leitura horizontal das legendas e datas).",
+    },
+    reverso_box: {
+      type: Type.ARRAY,
+      items: { type: Type.NUMBER },
+      description:
+        "Array de 4 números [ymin, xmin, ymax, xmax] (0 a 1000) delimitando estritamente a borda da moeda no reverso.",
+    },
+    reverso_rotation: {
+      type: Type.INTEGER,
+      description:
+        "Ângulo inteiro (0, 90, 180 ou 270) no sentido horário necessário para deixar o reverso perfeitamente 'em pé'.",
+    },
+  },
+  required: [
+    "anverso_box",
+    "anverso_rotation",
+    "reverso_box",
+    "reverso_rotation",
+  ],
+};
+
+function parseBase64Input(raw?: string): {
+  base64: string;
+  mimeType: string;
+} | null {
+  if (!raw || typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^data:([^;]+);base64,(.+)$/);
+  if (match) {
+    return {
+      mimeType: match[1] || "image/jpeg",
+      base64: match[2],
+    };
+  }
+  return {
+    mimeType: "image/jpeg",
+    base64: trimmed,
+  };
+}
+
+export function sanitizeBoundingBox(
+  box?: unknown
+): [number, number, number, number] {
+  if (!Array.isArray(box) || box.length < 4) {
+    return [40, 40, 960, 960];
+  }
+  const nums = box.slice(0, 4).map((n) => {
+    const v = Number(n);
+    return Number.isFinite(v) ? Math.max(0, Math.min(1000, v)) : 0;
+  });
+  let [ymin, xmin, ymax, xmax] = nums;
+  if (ymax <= ymin) {
+    ymin = 40;
+    ymax = 960;
+  }
+  if (xmax <= xmin) {
+    xmin = 40;
+    xmax = 960;
+  }
+  if (ymax - ymin < 80 || xmax - xmin < 80) {
+    return [40, 40, 960, 960];
+  }
+  return [ymin, xmin, ymax, xmax];
+}
+
+export function sanitizeRotationAngle(angle?: unknown): number {
+  const n = Math.round(Number(angle) || 0);
+  const mod = ((n % 360) + 360) % 360;
+  if (mod === 90 || mod === 180 || mod === 270) return mod;
+  return 0;
+}
+
+/**
+ * Analisa `anverso_image` e `reverso_image` via Gemini Vision e retorna a caixa delimitadora
+ * `[ymin, xmin, ymax, xmax]` (0–1000) e o ângulo horário (`0`, `90`, `180`, `270`) para deixar cada face em pé.
+ */
+export async function standardizeCoinImages(params: {
+  anverso_image?: string;
+  reverso_image?: string;
+}): Promise<StandardizeImageResponse> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error(
+      "A variável de ambiente GEMINI_API_KEY não está configurada. Defina-a no arquivo .env.local."
+    );
+  }
+
+  const anversoParsed = parseBase64Input(params.anverso_image);
+  const reversoParsed = parseBase64Input(params.reverso_image);
+
+  if (!anversoParsed && !reversoParsed) {
+    throw new Error(
+      "Envie pelo menos anverso_image ou reverso_image em Base64 para padronização."
+    );
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  const contents: Array<
+    | { text: string }
+    | { inlineData: { data: string; mimeType: string } }
+  > = [
+    {
+      text: `Você é um sistema de visão computacional de precisão para numismática.
+Analise cada face da moeda enviada (ANVERSO e REVERSO) e retorne:
+1. "anverso_box": array de 4 números [ymin, xmin, ymax, xmax] na escala de 0 a 1000 delimitando estritamente a borda metálica externa física da moeda no ANVERSO, ignorando sombras projetadas na superfície/papel ao redor.
+2. "anverso_rotation": ângulo inteiro (0, 90, 180 ou 270) no sentido HORÁRIO necessário para girar a imagem do ANVERSO para que a moeda fique perfeitamente 'em pé' (topo da efígie, busto, brasão ou símbolo principal apontando para o topo 12h e leitura horizontal correta das legendas/datas).
+3. "reverso_box": array de 4 números [ymin, xmin, ymax, xmax] na escala de 0 a 1000 delimitando estritamente a borda metálica externa física da moeda no REVERSO, ignorando sombras projetadas no fundo.
+4. "reverso_rotation": ângulo inteiro (0, 90, 180 ou 270) no sentido HORÁRIO necessário para girar a imagem do REVERSO para que fique perfeitamente 'em pé' (algarismos do valor facial, data e legendas alinhados na horizontal para leitura normal).
+Se uma das faces não tiver sido enviada, retorne [0, 0, 1000, 1000] para sua box e 0 para sua rotação.`,
+    },
+  ];
+
+  if (anversoParsed) {
+    contents.push({ text: "Imagem do ANVERSO:" });
+    contents.push({
+      inlineData: {
+        data: anversoParsed.base64,
+        mimeType: anversoParsed.mimeType,
+      },
+    });
+  } else {
+    contents.push({ text: "Imagem do ANVERSO: Não enviada." });
+  }
+
+  if (reversoParsed) {
+    contents.push({ text: "Imagem do REVERSO:" });
+    contents.push({
+      inlineData: {
+        data: reversoParsed.base64,
+        mimeType: reversoParsed.mimeType,
+      },
+    });
+  } else {
+    contents.push({ text: "Imagem do REVERSO: Não enviada." });
+  }
+
+  let modelIndex = 0;
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const currentModel =
+      CANDIDATE_MODELS[Math.min(modelIndex, CANDIDATE_MODELS.length - 1)];
+
+    try {
+      const response = await ai.models.generateContent({
+        model: currentModel,
+        contents,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: STANDARDIZE_IMAGE_SCHEMA,
+          temperature: 0.1,
+        },
+      });
+
+      const rawText = response?.text;
+      if (!rawText) {
+        throw new Error("O modelo Gemini retornou uma resposta vazia.");
+      }
+
+      const parsed = JSON.parse(rawText) as Partial<StandardizeImageResponse>;
+      return {
+        anverso_box: sanitizeBoundingBox(parsed.anverso_box),
+        anverso_rotation: sanitizeRotationAngle(parsed.anverso_rotation),
+        reverso_box: sanitizeBoundingBox(parsed.reverso_box),
+        reverso_rotation: sanitizeRotationAngle(parsed.reverso_rotation),
+      };
+    } catch (err) {
+      lastError = err;
+      const errText = err instanceof Error ? err.message : String(err);
+      const isModelNotFound =
+        errText.includes("404") ||
+        errText.includes("NOT_FOUND") ||
+        errText.toLowerCase().includes("no longer available");
+
+      if (isModelNotFound && modelIndex < CANDIDATE_MODELS.length - 1) {
+        modelIndex++;
+        continue;
+      }
+
+      if (isRetryableNetworkOrServerError(err) && attempt < MAX_ATTEMPTS) {
+        await sleep(RETRY_DELAY_MS);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Falha ao padronizar as imagens da moeda.");
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Camera, Library, Coins, Sparkles } from "lucide-react";
+import { Camera, Library, Coins, Sparkles, Loader2 } from "lucide-react";
 import {
   NumismaticClassification,
   NumismaticExemplar,
@@ -10,6 +10,7 @@ import {
 import {
   autoBackfillCatalogIds,
   autoOptimizeDatabaseImages,
+  autoStandardizeDatabaseImages,
   deduplicateLocalCollection,
   numismaticRepository,
 } from "@/lib/storage";
@@ -32,6 +33,10 @@ export default function HomePage() {
     null
   );
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+  const [standardizeProgress, setStandardizeProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
@@ -44,11 +49,31 @@ export default function HomePage() {
     );
   };
 
+  const triggerRetroactiveStandardization = () => {
+    autoStandardizeDatabaseImages(
+      (current, total) => {
+        setStandardizeProgress({ current, total });
+      },
+      () => {
+        loadRecords();
+      }
+    )
+      .then((updated) => {
+        if (updated) {
+          loadRecords();
+        }
+      })
+      .finally(() => {
+        setStandardizeProgress(null);
+      });
+  };
+
   useEffect(() => {
     loadRecords();
     autoOptimizeDatabaseImages().then(() => {
       console.log("Otimização automática do banco local concluída");
       loadRecords();
+      triggerRetroactiveStandardization();
     });
     autoBackfillCatalogIds().then((updated) => {
       if (updated) {
@@ -140,6 +165,7 @@ export default function HomePage() {
       await numismaticRepository.create(preview.classification, {
         anverso: preview.anversoImage?.thumbnailDataUrl,
         reverso: preview.reversoImage?.thumbnailDataUrl,
+        alreadyStandardized: preview.alreadyStandardized,
       });
 
     const updatedList = await numismaticRepository.list();
@@ -160,6 +186,12 @@ export default function HomePage() {
     patch: Partial<
       Pick<
         NumismaticExemplar,
+        | "gravura"
+        | "anverso_image"
+        | "reverso_image"
+        | "anverso_rotation"
+        | "reverso_rotation"
+        | "image_standardized"
         | "estado_conservacao"
         | "valor_mercado_min_brl"
         | "valor_mercado_max_brl"
@@ -174,6 +206,38 @@ export default function HomePage() {
       exemplarId,
       patch
     );
+    const updatedList = await numismaticRepository.list();
+    setRecords(updatedList);
+    if (updated) {
+      setSelectedRecord(updated);
+    }
+  };
+
+  const handleUpdateRecord = async (
+    recordId: string,
+    patch: Partial<
+      Pick<
+        NumismaticRecord,
+        | "nome"
+        | "pais"
+        | "ano"
+        | "valor_face"
+        | "unidade_monetaria"
+        | "casa_moeda"
+        | "material"
+        | "peso_gramas"
+        | "diametro_mm"
+        | "bordo"
+        | "krause_id"
+        | "numista_id"
+        | "curiosidades"
+      >
+    > & {
+      gravura?: string;
+      exemplarId?: string;
+    }
+  ) => {
+    const updated = await numismaticRepository.updateRecord(recordId, patch);
     const updatedList = await numismaticRepository.list();
     setRecords(updatedList);
     if (updated) {
@@ -247,7 +311,7 @@ export default function HomePage() {
         mergedTarget.exemplares[mergedTarget.exemplares.length - 1];
       setSelectedExemplarId(lastExemplar?.id || null);
       setStatusBanner(
-        `Exemplar(es) transferido(s) e mesclado(s) com sucesso em "${mergedTarget.nome}" (${mergedTarget.friendly_code})!`
+        `Exemplar(es) transferido(s) e mesclado(s) com sucesso em "${mergedTarget.nome}" (CUB: ${mergedTarget.friendly_code})!`
       );
     }
   };
@@ -298,6 +362,17 @@ export default function HomePage() {
         </button>
       </header>
 
+      {/* Banner Discreto da Fila Retroativa de Padronização Visual de Moedas */}
+      {standardizeProgress && (
+        <div className="mb-3 flex items-center gap-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs font-medium text-amber-200 shadow-sm">
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-amber-400" />
+          <span>
+            Alinhando e padronizando fotos do acervo (
+            {standardizeProgress.current}/{standardizeProgress.total})...
+          </span>
+        </div>
+      )}
+
       {/* Banner de Status (ex: Novo exemplar vinculado a ficha existente) */}
       {statusBanner && (
         <div className="mb-4 flex items-center justify-between rounded-2xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-3 text-xs text-indigo-200">
@@ -342,7 +417,10 @@ export default function HomePage() {
               navigateToTab("ficha");
             }}
             onExportJson={handleExportJson}
-            onRecordsOptimized={loadRecords}
+            onRecordsOptimized={() => {
+              loadRecords();
+              triggerRetroactiveStandardization();
+            }}
           />
         )}
 
@@ -352,6 +430,7 @@ export default function HomePage() {
             otherRecords={records}
             initialExemplarId={selectedExemplarId}
             onUpdateExemplar={handleUpdateExemplar}
+            onUpdateRecord={handleUpdateRecord}
             onAddExemplar={handleAddExemplar}
             onDeleteExemplar={handleDeleteExemplar}
             onMergeWithRecord={handleMergeWithRecord}

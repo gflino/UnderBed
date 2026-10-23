@@ -285,3 +285,8 @@ export async function processCapturedImage(
   const webpDataUrl = await autoCropAndCompressCoin(file);
   return createProcessedImageFromWebp(webpDataUrl);
 }
+
+export {
+  cropCenterAndRotateCoin,
+  rotateBase64Image,
+} from "@/lib/imageProcessor";
